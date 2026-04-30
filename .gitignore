@@ -1,0 +1,8 @@
+.superpowers/
+node_modules/
+*.log
+.env
+.env.local
+dist/
+.next/
+.DS_Store
