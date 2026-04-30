@@ -134,6 +134,7 @@ PostgreSQL + Drizzle ORM. Entidades núcleo:
 
 **`face_records`** — vínculo entre uma pessoa e suas representações faciais.
 - `id`, `person_id` (FK), `camera_face_id?` (string — ID retornado pelo Face DB da câmera), `embedding?` (vector(512), pgvector — populado só se failover B usado), `snapshot_path` (filesystem), `created_at`, `is_primary` (bool).
+- **Nota de implementação:** a extensão pgvector e o índice ANN (`HNSW` com `vector_cosine_ops`, `m=16, ef_construction=64`) são criados nas migrações da **Fase 2**, mesmo que `embedding` fique vazio até a Fase 6. Evita migração de schema mid-project quando o failover B for ativado.
 
 **`detections`** — cada evento bruto da câmera.
 - `id`, `camera_id`, `person_id?` (null quando ainda anônimo), `track_id`, `session_id?`, `bbox` (jsonb), `face_attrs` (jsonb: age, gender, glasses, mask, etc.), `dominant_emotion`, `emotion_confidence`, `snapshot_path?`, `detected_at`, `raw_event` (jsonb — auditoria do payload Dahua original). **Retenção: 30 dias.**
@@ -193,7 +194,7 @@ Threshold (~0.35–0.45 cosine para `buffalo_s`) é calibrado durante discovery.
 
 ### 5.3 Match temporal (anônimo → cliente do ERP)
 
-Janela ±5min em torno do checkin. Conservador: auto_match só quando há **uma única** candidata anônima.
+Janela ±5min em torno do checkin (**configurável via `MATCH_WINDOW_SECONDS` em `config/`** desde a Fase 4 — necessário ajustar com dados reais de pico). Conservador: auto_match só quando há **uma única** candidata anônima.
 
 ```
 erp_checkin lido → janela [T-300s, T+300s]
@@ -248,6 +249,8 @@ Endpoint único: `WS /api/ws`. Cliente assina **tópicos** via mensagem `subscri
 | `camera.health` | Mudança de status da câmera |
 
 Cliente envia: `subscribe`, `unsubscribe`, `ping`. Reconexão com `?since=<lastEventId>` (replay de até 5min). Backpressure: cliente atrasado é dropado após 100 mensagens não-acks.
+
+**Limites configuráveis via env (não hardcoded):** `WS_REPLAY_WINDOW_SECONDS` (default 300), `WS_BACKPRESSURE_LIMIT` (default 100). Permite ajuste sem rebuild quando virar produção multi-cliente.
 
 ## 7. Estrutura de pastas
 
@@ -342,6 +345,18 @@ DH-IPC-HFW5442T-ASE/
 
 `GET /health` retorna 200 só se todas as deps essenciais estão OK. Resposta com detalhamento por subsystem (`db`, `camera`, `reid_sidecar`, `erp_mysql`). Status `degraded` (sistema funciona com perda de capacidade) é distinto de `down`. systemd não reinicia em `degraded`.
 
+**Matriz `degraded` vs `down` por subsystem:**
+
+| Subsystem off | Status global | Capacidades perdidas |
+|---|---|---|
+| Câmera offline | **down** (essencial) | tudo — sem ingest, sem pipeline |
+| DB offline | **down** (essencial) | tudo — sem persistência, REST 503, WS continua só do buffer |
+| ERP MySQL offline | **degraded** | match temporal pausa, sync de funcionários/clientes para; cache cobre leituras existentes; ingest e re-id continuam |
+| Sidecar reid offline | **degraded** | failover B inoperante; estratégia A continua funcionando; anônimos não cadastrados ficam não-identificados |
+| Frontend não conectado (0 WS clients) | **healthy** | nenhuma — sistema persiste tudo, UI volta com replay |
+
+`down` = systemd pode reiniciar (após N falhas). `degraded` = log + alerta, sem reinício automático.
+
 ### 8.6 Alerting
 
 MVP: sem alerting externo. Hook `Alerter` com impl noop, plugável depois (webhook Discord/Telegram).
@@ -373,7 +388,7 @@ Cada arquivo `foo.ts` em `src/` tem `tests/unit/foo.test.ts` espelhado.
 | Idempotência | Sync ERP 5x consecutivas = mesmo resultado |
 | Retention cleanup | Detections > 30d sumiram, sessions agregadas permanecem |
 
-Tempo alvo: <30s para suíte inteira de integration.
+Tempo alvo: <60s para suíte inteira de integration (~30s seria ideal mas pgvector + container spin-up encarece). Estratégia para chegar perto de <30s: **container reuse** entre testes via fixture compartilhada (testcontainers `withReuse()`) e `TRUNCATE` em vez de drop/recreate entre cenários. Aplicar primeiro a abordagem simples (container por suite) e otimizar se passar do alvo.
 
 ### 9.3 E2E
 
@@ -416,10 +431,12 @@ GitHub Actions (ou pre-commit local): lint (biome), type check (tsc strict), uni
 
 **Estimativa total: ~22–33 dias úteis (≈4–7 semanas).**
 
+⚠ **Nota sobre estimativa solo-dev:** o range assume desenvolvimento single-track. Como este projeto é solo (perfil E do MVP — apenas dev/dono usa o dashboard), as Fases 4 e 5 serão sequenciais na prática, não paralelas. **A estimativa realista skewa para o upper bound (~30–33 dias úteis = ~6–7 semanas).** A faixa inferior só seria atingida com 2 devs ou se a Fase 6 for adiada.
+
 ### 10.1 Sequenciamento
 
 - Fases 0 → 1 → 2 → 3 são sequenciais (cada uma habilita a próxima).
-- Fases 4 e 5 podem ser paralelas se houver mais de um dev.
+- Fases 4 e 5 podem ser paralelas se houver mais de um dev (não é o caso atual — solo dev).
 - Fase 6 pode ser adiada se 3 + match temporal cobrirem bem o uso real.
 - Fase 7 só após estabilização das anteriores.
 
