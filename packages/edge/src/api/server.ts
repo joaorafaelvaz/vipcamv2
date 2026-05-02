@@ -1,6 +1,6 @@
+import type { HealthResponse } from "@vipcam/shared";
 import { Hono } from "hono";
 import { logger as appLogger } from "../obs/logger.js";
-import type { HealthResponse } from "@vipcam/shared";
 
 export function createServer() {
   const app = new Hono();

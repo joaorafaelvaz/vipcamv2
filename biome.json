@@ -17,6 +17,12 @@
     "lineWidth": 100
   },
   "files": {
-    "ignore": ["**/node_modules/**", "**/dist/**", "**/.next/**", "packages/reid/**"]
+    "ignore": [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/.next/**",
+      "packages/reid/**",
+      "packages/web/next-env.d.ts"
+    ]
   }
 }

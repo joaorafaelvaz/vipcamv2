@@ -1,6 +1,6 @@
+import { createServer } from "./api/server.js";
 import { env } from "./config/env.js";
 import { logger } from "./obs/logger.js";
-import { createServer } from "./api/server.js";
 
 const app = createServer();
 
