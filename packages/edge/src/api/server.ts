@@ -1,6 +1,9 @@
 import type { HealthResponse } from "@vipcam/shared";
 import { Hono } from "hono";
+import { getEnv } from "../config/env.js";
+import { getLatestReport, runDiscovery } from "../discovery/runner.js";
 import { logger as appLogger } from "../obs/logger.js";
+import { createDiscoveryRoutes } from "./routes/discovery.js";
 
 export function createServer() {
   const app = new Hono();
@@ -16,6 +19,20 @@ export function createServer() {
     };
     return c.json(body);
   });
+
+  const env = getEnv();
+  app.route(
+    "/api/discovery",
+    createDiscoveryRoutes({
+      env: {
+        CAMERA_IP: env.CAMERA_IP,
+        CAMERA_USER: env.CAMERA_USER,
+        CAMERA_PASS: env.CAMERA_PASS,
+      },
+      runDiscovery,
+      getLatestReport,
+    }),
+  );
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
