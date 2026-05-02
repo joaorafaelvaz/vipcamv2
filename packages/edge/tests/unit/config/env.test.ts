@@ -27,4 +27,26 @@ describe("parseEnv", () => {
   test("lança erro quando EDGE_PORT não é numérico", () => {
     expect(() => parseEnv({ API_KEY: "k", EDGE_PORT: "abc" })).toThrow();
   });
+
+  test("aceita config de câmera quando todas as vars presentes", () => {
+    const result = parseEnv({
+      API_KEY: "k",
+      CAMERA_IP: "192.168.1.108",
+      CAMERA_USER: "admin",
+      CAMERA_PASS: "secret",
+    });
+    expect(result.CAMERA_IP).toBe("192.168.1.108");
+    expect(result.CAMERA_USER).toBe("admin");
+  });
+
+  test("permite config de câmera ausente (modo discovery offline)", () => {
+    const result = parseEnv({ API_KEY: "k" });
+    expect(result.CAMERA_IP).toBeUndefined();
+  });
+
+  test("rejeita CAMERA_IP malformado", () => {
+    expect(() =>
+      parseEnv({ API_KEY: "k", CAMERA_IP: "not-an-ip", CAMERA_USER: "a", CAMERA_PASS: "b" }),
+    ).toThrow();
+  });
 });

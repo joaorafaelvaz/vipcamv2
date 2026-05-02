@@ -1,11 +1,25 @@
 import { z } from "zod";
 
-const envSchema = z.object({
-  EDGE_PORT: z.coerce.number().int().positive().default(4000),
-  LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  API_KEY: z.string().min(1, "API_KEY is required"),
-});
+const envSchema = z
+  .object({
+    EDGE_PORT: z.coerce.number().int().positive().default(4000),
+    LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
+    NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+    API_KEY: z.string().min(1, "API_KEY is required"),
+    // Camera (opcional — quando ausente, discovery roda em modo offline para testes)
+    CAMERA_IP: z
+      .string()
+      .regex(/^(\d{1,3}\.){3}\d{1,3}$/, "CAMERA_IP must be a valid IPv4")
+      .optional(),
+    CAMERA_USER: z.string().optional(),
+    CAMERA_PASS: z.string().optional(),
+  })
+  .refine(
+    (v) =>
+      (v.CAMERA_IP && v.CAMERA_USER && v.CAMERA_PASS) ||
+      (!v.CAMERA_IP && !v.CAMERA_USER && !v.CAMERA_PASS),
+    { message: "CAMERA_IP/USER/PASS must be all set or all unset" },
+  );
 
 export type Env = z.infer<typeof envSchema>;
 
