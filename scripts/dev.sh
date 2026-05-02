@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Bootstrap .env.local do edge se ausente (config local mínima para subir)
+if [ ! -f packages/edge/.env.local ]; then
+  echo "[dev] criando packages/edge/.env.local a partir do .env.example"
+  cp packages/edge/.env.example packages/edge/.env.local
+fi
+
 # Sobe Postgres se não estiver up
 if ! docker compose ps postgres --status running --quiet | grep -q .; then
   echo "[dev] subindo postgres..."

@@ -19,4 +19,20 @@ export function parseEnv(raw: NodeJS.ProcessEnv | Record<string, string | undefi
   return result.data;
 }
 
-export const env: Env = parseEnv(process.env);
+// Lazy singleton: parsing só acontece quando getEnv() é chamado pela primeira vez.
+// Isso evita que o load do módulo (ex: pelo test runner importando parseEnv)
+// dispare validação contra `process.env` real, que pode não ter API_KEY definido.
+let _env: Env | undefined;
+
+export function getEnv(): Env {
+  if (!_env) _env = parseEnv(process.env);
+  return _env;
+}
+
+/**
+ * Reseta o singleton — útil em testes que precisam re-validar com process.env mockado.
+ * Não usar em código de produção.
+ */
+export function resetEnvCache(): void {
+  _env = undefined;
+}

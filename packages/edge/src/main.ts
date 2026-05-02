@@ -1,7 +1,8 @@
 import { createServer } from "./api/server.js";
-import { env } from "./config/env.js";
+import { getEnv } from "./config/env.js";
 import { logger } from "./obs/logger.js";
 
+const env = getEnv();
 const app = createServer();
 
 const server = Bun.serve({
