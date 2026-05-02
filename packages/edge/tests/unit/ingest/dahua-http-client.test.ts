@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseDigestChallenge, buildDigestHeader } from "../../../src/ingest/dahua-http-client.js";
+import { buildDigestHeader, parseDigestChallenge } from "../../../src/ingest/dahua-http-client.js";
 
 describe("parseDigestChallenge", () => {
   test("extrai realm, nonce, qop de um header Digest válido", () => {

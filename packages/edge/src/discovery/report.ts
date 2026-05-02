@@ -54,14 +54,13 @@ export function buildReport(args: BuildArgs): DiscoveryReport {
   const versionInfo = probeParsed("magicBox.getSoftwareVersion") ?? {};
   const deviceTypeInfo = probeParsed("magicBox.getDeviceType") ?? {};
 
-  const cameraModel =
-    deviceTypeInfo["type"] ?? deviceTypeInfo["deviceType"] ?? sysInfo["deviceType"];
-  const cameraSerial = serialInfo["sn"] ?? serialInfo["serialNumber"] ?? sysInfo["serialNumber"];
+  const cameraModel = deviceTypeInfo.type ?? deviceTypeInfo.deviceType ?? sysInfo.deviceType;
+  const cameraSerial = serialInfo.sn ?? serialInfo.serialNumber ?? sysInfo.serialNumber;
   const firmware =
-    versionInfo["version"] ??
-    versionInfo["softwareVersion"] ??
-    sysInfo["softwareVersion"] ??
-    sysInfo["hardwareVersion"];
+    versionInfo.version ??
+    versionInfo.softwareVersion ??
+    sysInfo.softwareVersion ??
+    sysInfo.hardwareVersion;
 
   const ageMatches = findInData(args.capturedEvents, AGE_KEYS);
   const genderMatches = findInData(args.capturedEvents, GENDER_KEYS);
@@ -110,7 +109,7 @@ const STATUS_ICON: Record<ProbeResult["status"], string> = {
 
 export function renderMarkdown(r: DiscoveryReport): string {
   const lines: string[] = [];
-  lines.push(`# Discovery Report — DH-IPC-HFW5442T-ASE`);
+  lines.push("# Discovery Report — DH-IPC-HFW5442T-ASE");
   lines.push("");
   lines.push(`**Gerado em:** ${r.generated_at}`);
   lines.push(`**Câmera IP:** ${r.camera_ip}`);
@@ -134,12 +133,12 @@ export function renderMarkdown(r: DiscoveryReport): string {
   lines.push("");
   lines.push(`- **Duração:** ${r.capture_duration_seconds}s`);
   lines.push(`- **Eventos capturados:** ${r.events_captured}`);
-  lines.push(`- **Tipos de evento:**`);
+  lines.push("- **Tipos de evento:**");
   for (const [code, count] of Object.entries(r.event_types_seen)) {
     lines.push(`  - \`${code}\`: ${count}`);
   }
   lines.push("");
-  lines.push(`- **Chaves de atributo vistas em payloads:**`);
+  lines.push("- **Chaves de atributo vistas em payloads:**");
   for (const k of r.attribute_keys_seen) lines.push(`  - \`${k}\``);
   lines.push("");
   lines.push(`- **Idade:** ${r.has_age_attribute ? "✅ presente" : "❌ ausente"}`);

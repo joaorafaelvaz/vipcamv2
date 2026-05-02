@@ -1,7 +1,7 @@
 import type { ProbeResult } from "@vipcam/shared";
+import type { DahuaHttpClient } from "../ingest/dahua-http-client.js";
 import { logger } from "../obs/logger.js";
 import type { ProbeFn } from "./types.js";
-import type { DahuaHttpClient } from "../ingest/dahua-http-client.js";
 
 export async function runProbes(
   probes: ProbeFn[],

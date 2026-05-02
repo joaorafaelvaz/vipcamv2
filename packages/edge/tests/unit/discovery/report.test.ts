@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { buildReport, renderMarkdown } from "../../../src/discovery/report.js";
 import type { ProbeResult } from "@vipcam/shared";
+import { buildReport, renderMarkdown } from "../../../src/discovery/report.js";
 
 const probes: ProbeResult[] = [
   {
@@ -49,7 +49,7 @@ describe("buildReport", () => {
     expect(report.camera_ip).toBe("192.168.1.108");
     expect(report.camera_model).toBe("IPC-HFW5442T-ASE");
     expect(report.events_captured).toBe(1);
-    expect(report.event_types_seen["FaceDetection"]).toBe(1);
+    expect(report.event_types_seen.FaceDetection).toBe(1);
     expect(report.has_age_attribute).toBe(true);
     expect(report.has_gender_attribute).toBe(true);
     expect(report.has_emotion_attribute).toBe(false);

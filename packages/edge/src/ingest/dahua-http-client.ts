@@ -17,8 +17,7 @@ export function parseDigestChallenge(headerValue: string): DigestChallenge | nul
   const out: Record<string, string> = {};
   // Match "key=value" or 'key="value"'
   const re = /(\w+)\s*=\s*(?:"([^"]*)"|([^,\s]+))/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(params)) !== null) {
+  for (const m of params.matchAll(re)) {
     const key = m[1];
     if (!key) continue;
     out[key.toLowerCase()] = m[2] ?? m[3] ?? "";

@@ -8,15 +8,15 @@ serialNumber=ABC123
 hardwareVersion=1.00
 machineName=IPC`;
     const parsed = parseMagicBoxKeyValue(body);
-    expect(parsed["deviceType"]).toBe("IPC-HFW5442T-ASE");
-    expect(parsed["serialNumber"]).toBe("ABC123");
+    expect(parsed.deviceType).toBe("IPC-HFW5442T-ASE");
+    expect(parsed.serialNumber).toBe("ABC123");
   });
 
   test("ignora linhas vazias e malformadas", () => {
     const body = "key1=value1\n\ngarbage\nkey2=value2";
     const parsed = parseMagicBoxKeyValue(body);
-    expect(parsed["key1"]).toBe("value1");
-    expect(parsed["key2"]).toBe("value2");
+    expect(parsed.key1).toBe("value1");
+    expect(parsed.key2).toBe("value2");
     expect(Object.keys(parsed)).toHaveLength(2);
   });
 });
