@@ -10,7 +10,8 @@
     "./types": "./src/types/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --build",
+    "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
     "zod": "^3.23.8"
