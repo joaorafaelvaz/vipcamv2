@@ -8,3 +8,6 @@ dist/
 .DS_Store
 *.tsbuildinfo
 discovery-output/
+packages/reid/.venv/
+packages/reid/**/__pycache__/
+*.pyc
