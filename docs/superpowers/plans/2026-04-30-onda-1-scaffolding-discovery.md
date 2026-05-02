@@ -408,8 +408,26 @@ export function parseEnv(raw: NodeJS.ProcessEnv | Record<string, string | undefi
   return result.data;
 }
 
-export const env: Env = parseEnv(process.env);
+// Lazy singleton: parsing só acontece quando getEnv() é chamado pela primeira vez.
+// Isso evita que o load do módulo (ex: pelo test runner importando parseEnv)
+// dispare validação contra `process.env` real, que pode não ter API_KEY definido.
+let _env: Env | undefined;
+
+export function getEnv(): Env {
+  if (!_env) _env = parseEnv(process.env);
+  return _env;
+}
+
+/**
+ * Reseta o singleton — útil em testes que precisam re-validar com process.env mockado.
+ * Não usar em código de produção.
+ */
+export function resetEnvCache(): void {
+  _env = undefined;
+}
 ```
+
+> **Nota da Onda 1 review:** o eager `export const env = parseEnv(process.env)` foi descartado porque qualquer import do módulo (incluindo o test runner importando apenas `parseEnv`) disparava a validação contra `process.env`, fazendo `bun test` falhar quando `API_KEY` não estava setado. A versão lazy mantém validação fail-fast no startup do server (`main.ts` chama `getEnv()` imediatamente) sem prejudicar testes ou imports puros.
 
 - [ ] **Step 8: Rodar teste e confirmar que passa**
 
@@ -452,10 +470,11 @@ export function createServer() {
 - [ ] **Step 10: Criar `packages/edge/src/main.ts`**
 
 ```typescript
-import { env } from "./config/env.js";
+import { getEnv } from "./config/env.js";
 import { logger } from "./obs/logger.js";
 import { createServer } from "./api/server.js";
 
+const env = getEnv();
 const app = createServer();
 
 const server = Bun.serve({
@@ -2456,9 +2475,10 @@ Modificar `packages/edge/src/api/server.ts`:
 // imports:
 import { createDiscoveryRoutes } from "./routes/discovery.js";
 import { runDiscovery, getLatestReport } from "../discovery/runner.js";
-import { env } from "../config/env.js";
+import { getEnv } from "../config/env.js";
 
 // dentro de createServer(), após o handler de /api/health:
+const env = getEnv();
 app.route(
   "/api/discovery",
   createDiscoveryRoutes({
