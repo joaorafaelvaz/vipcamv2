@@ -89,6 +89,10 @@ export function buildReport(args: BuildArgs): DiscoveryReport {
     has_emotion_attribute: emotionMatches.length > 0,
     has_age_attribute: ageMatches.length > 0,
     has_gender_attribute: genderMatches.length > 0,
+    // TODO(chunk-1B): se attach probe falhou mas magicBox.* funcionou, retornar
+    // "polling" quando o fallback de polling for implementado (spec §11 R1).
+    // Também passar a checar status da probe eventManager.attach explicitamente,
+    // não só presença de eventos capturados.
     recommended_ingest_channel: args.capturedEvents.length > 0 ? "http_attach_sse" : "unknown",
     fork_decision_required: fork,
   };

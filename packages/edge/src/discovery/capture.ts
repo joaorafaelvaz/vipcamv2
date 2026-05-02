@@ -58,8 +58,10 @@ export function parseMultipartChunks(buf: Buffer, boundary: string): ParseResult
   return { events, remainder };
 }
 
-function tryParseDahuaEventLine(raw: string): NonNullable<CapturedEvent["parsed"]> {
+function tryParseDahuaEventLine(raw: string): CapturedEvent["parsed"] {
   // Linhas Dahua: "Code=VideoMotion;action=Start;index=0;data={...}"
+  // Retorna undefined quando nada relevante foi extraído (vs. {} que parecia
+  // "parseou mas vazio"); mantém o contrato de `parsed?` semanticamente honesto.
   const out: { code?: string; action?: string; data?: unknown } = {};
   for (const seg of raw.split(";")) {
     const eq = seg.indexOf("=");
@@ -75,6 +77,9 @@ function tryParseDahuaEventLine(raw: string): NonNullable<CapturedEvent["parsed"
         out.data = v;
       }
     }
+  }
+  if (out.code === undefined && out.action === undefined && out.data === undefined) {
+    return undefined;
   }
   return out;
 }
@@ -120,12 +125,14 @@ export async function captureEvents(
       const { events: parsed, remainder } = parseMultipartChunks(pending, boundary);
       pending = remainder; // preserva bytes não-consumidos para próxima iteração
       for (const raw of parsed) {
-        events.push({
+        const parsedLine = tryParseDahuaEventLine(raw);
+        const event: CapturedEvent = {
           index: events.length,
           received_at: new Date().toISOString(),
           raw,
-          parsed: tryParseDahuaEventLine(raw),
-        });
+        };
+        if (parsedLine !== undefined) event.parsed = parsedLine;
+        events.push(event);
       }
     }
   } catch (err) {
