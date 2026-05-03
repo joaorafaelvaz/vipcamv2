@@ -1,0 +1,16 @@
+# Force LF line endings on all text files cross-platform.
+# Resolves Windows core.autocrlf=true reverberating CRLF into committed
+# files, which then makes biome formatter complain.
+* text=auto eol=lf
+
+# Binary files (just in case)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
