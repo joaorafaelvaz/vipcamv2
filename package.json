@@ -1,0 +1,22 @@
+{
+  "name": "vipcam",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "bun --filter '*' typecheck",
+    "test": "bun --filter '@vipcam/edge' test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

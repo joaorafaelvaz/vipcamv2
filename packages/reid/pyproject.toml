@@ -1,0 +1,16 @@
+[project]
+name = "vipcam-reid"
+version = "0.0.0"
+description = "Sidecar de re-identificação facial (InsightFace CPU). Stub na Onda 1."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.31.0",
+  "pydantic>=2.9.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+  "pytest>=8.3.0",
+  "httpx>=0.27.0",
+]

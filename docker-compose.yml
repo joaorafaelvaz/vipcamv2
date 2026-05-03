@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: vipcam-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vipcam
+      POSTGRES_PASSWORD: vipcam
+      POSTGRES_DB: vipcam
+    ports:
+      - "5432:5432"
+    volumes:
+      - vipcam-pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vipcam -d vipcam"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  vipcam-pgdata:
