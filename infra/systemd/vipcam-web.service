@@ -1,0 +1,35 @@
+[Unit]
+Description=VIPCam Web — Next.js frontend (porta 3035, exposta via nginx)
+Documentation=https://github.com/<owner>/<repo>
+After=network-online.target vipcam-edge.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vipcam
+Group=vipcam
+WorkingDirectory=/opt/vipcam/packages/web
+EnvironmentFile=/etc/vipcam/web.env
+# PORT=3035 vence sobre defaults internos do Next quando "next start" é chamado sem -p
+Environment=PORT=3035
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/vipcam/.bun/bin
+ExecStart=/usr/local/bin/bun run start
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vipcam-web
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/vipcam/packages/web/.next /var/log/vipcam
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

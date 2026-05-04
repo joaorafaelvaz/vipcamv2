@@ -1,0 +1,38 @@
+[Unit]
+Description=VIPCam Edge — Bun+Hono backend (porta interna 4001)
+Documentation=https://github.com/<owner>/<repo>
+After=network-online.target
+Wants=network-online.target
+# Postgres é dep mas não exigida — edge sobe em modo "sem DB"
+# se DATABASE_URL não estiver setado.
+
+[Service]
+Type=simple
+User=vipcam
+Group=vipcam
+WorkingDirectory=/opt/vipcam/packages/edge
+EnvironmentFile=/etc/vipcam/edge.env
+# bun resolvido via PATH; se instalado em ~vipcam/.bun/bin, ajustar abaixo:
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/vipcam/.bun/bin
+ExecStart=/usr/local/bin/bun src/main.ts
+Restart=on-failure
+RestartSec=5s
+# Limite de 30s para parada graciosa (graceful shutdown está em main.ts)
+TimeoutStopSec=30s
+
+# Logs vão para journald (acessar via journalctl -u vipcam-edge)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vipcam-edge
+
+# Hardening básico
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/vipcam /opt/vipcam/discovery-output /opt/vipcam/snapshots
+# Permite só localhost + rede da câmera/ERP — ajustar se câmera está em VLAN diferente
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

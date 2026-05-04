@@ -1,0 +1,36 @@
+# Renomeie este arquivo para vipcam-reid.service e copie para
+# /etc/systemd/system/ APENAS quando a Fase 6 (failover B com InsightFace)
+# estiver implementada. Antes disso, edge funciona só com estratégia A
+# e este sidecar é desnecessário.
+
+[Unit]
+Description=VIPCam Reid — Python sidecar (InsightFace, porta interna 5005)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vipcam
+Group=vipcam
+WorkingDirectory=/opt/vipcam/packages/reid
+EnvironmentFile=-/etc/vipcam/reid.env
+# uv resolvido via PATH; ajustar se instalado em outro local
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/vipcam/.local/bin
+ExecStart=/home/vipcam/.local/bin/uv run uvicorn src.main:app --host 127.0.0.1 --port 5005
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vipcam-reid
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/vipcam /opt/vipcam/packages/reid/.venv /opt/vipcam/snapshots
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
