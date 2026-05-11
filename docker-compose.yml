@@ -8,7 +8,9 @@ services:
       POSTGRES_PASSWORD: vipcam
       POSTGRES_DB: vipcam
     ports:
-      - "5432:5432"
+      # Bind apenas em loopback — não expor Postgres na LAN.
+      # Edge conecta via 127.0.0.1:5432 (mesma máquina) ou via network do compose.
+      - "127.0.0.1:5432:5432"
     volumes:
       - vipcam-pgdata:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro

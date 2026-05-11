@@ -10,10 +10,10 @@ Wants=network-online.target
 Type=simple
 User=vipcam
 Group=vipcam
-WorkingDirectory=/opt/vipcam/packages/edge
+WorkingDirectory=/opt/vipcamv2/packages/edge
 EnvironmentFile=/etc/vipcam/edge.env
-# bun resolvido via PATH; se instalado em ~vipcam/.bun/bin, ajustar abaixo:
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/vipcam/.bun/bin
+# bun deve estar em /usr/local/bin/bun (symlink criado pelo install.sh)
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/local/bin/bun src/main.ts
 Restart=on-failure
 RestartSec=5s
@@ -30,7 +30,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/log/vipcam /opt/vipcam/discovery-output /opt/vipcam/snapshots
+ReadWritePaths=/var/log/vipcam /opt/vipcamv2/discovery-output /opt/vipcamv2/snapshots
 # Permite só localhost + rede da câmera/ERP — ajustar se câmera está em VLAN diferente
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 

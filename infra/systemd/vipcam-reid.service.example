@@ -12,7 +12,7 @@ Wants=network-online.target
 Type=simple
 User=vipcam
 Group=vipcam
-WorkingDirectory=/opt/vipcam/packages/reid
+WorkingDirectory=/opt/vipcamv2/packages/reid
 EnvironmentFile=-/etc/vipcam/reid.env
 # uv resolvido via PATH; ajustar se instalado em outro local
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/vipcam/.local/bin
@@ -29,7 +29,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/log/vipcam /opt/vipcam/packages/reid/.venv /opt/vipcam/snapshots
+ReadWritePaths=/var/log/vipcam /opt/vipcamv2/packages/reid/.venv /opt/vipcamv2/snapshots
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]

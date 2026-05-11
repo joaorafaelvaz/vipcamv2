@@ -9,7 +9,7 @@
 # O que faz:
 #   1. Cria usuário de sistema 'vipcam'
 #   2. Prepara /etc/vipcam (envs) e /var/log/vipcam (logs legados)
-#   3. Cria /opt/vipcam/snapshots e /opt/vipcam/discovery-output (writable pelo service)
+#   3. Cria /opt/vipcamv2/snapshots e /opt/vipcamv2/discovery-output (writable pelo service)
 #   4. Instala systemd units (edge + web) e recarrega systemd
 #   5. Instala vhost nginx (sem ativar TLS — certbot é etapa manual)
 #   6. Lista próximos passos
@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/vipcam}"
+APP_DIR="${APP_DIR:-/opt/vipcamv2}"
 SERVICE_USER="${SERVICE_USER:-vipcam}"
 DOMAIN="monitoramento.franquiabv.com.br"
 
@@ -42,6 +42,29 @@ fi
 # Dono dos arquivos do repo
 chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
 
+# ----- 1.5. Symlink global do bun -----
+# Bun é instalado por usuário (default ~/.bun/bin/bun). Pro systemd unit
+# achar via /usr/local/bin/bun (PATH padrão), criamos symlink. Idempotente.
+if [[ ! -e /usr/local/bin/bun ]]; then
+  BUN_PATH=""
+  for candidate in /root/.bun/bin/bun /home/*/.bun/bin/bun; do
+    if [[ -x "$candidate" ]]; then
+      BUN_PATH="$candidate"
+      break
+    fi
+  done
+  if [[ -n "$BUN_PATH" ]]; then
+    log "symlink: /usr/local/bin/bun -> $BUN_PATH"
+    ln -sf "$BUN_PATH" /usr/local/bin/bun
+  else
+    warn "bun não encontrado em /root/.bun/bin nem /home/*/.bun/bin"
+    warn "  instale: curl -fsSL https://bun.sh/install | bash"
+    warn "  ou crie o symlink manualmente: ln -sf <PATH_DO_BUN> /usr/local/bin/bun"
+  fi
+else
+  log "/usr/local/bin/bun já existe"
+fi
+
 # ----- 2. /etc/vipcam (envs) -----
 log "preparando /etc/vipcam"
 mkdir -p /etc/vipcam
@@ -54,7 +77,7 @@ mkdir -p /var/log/vipcam
 chown "$SERVICE_USER:$SERVICE_USER" /var/log/vipcam
 
 # ----- 4. Diretórios de runtime gravados pelo serviço -----
-log "preparando /opt/vipcam/{snapshots,discovery-output}"
+log "preparando /opt/vipcamv2/{snapshots,discovery-output}"
 mkdir -p "$APP_DIR/snapshots" "$APP_DIR/discovery-output"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/snapshots" "$APP_DIR/discovery-output"
 

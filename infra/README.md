@@ -22,7 +22,7 @@ VPS Linux compartilhado com outros sites/serviços.
 ## Estrutura de arquivos no VPS
 
 ```
-/opt/vipcam/                          ← repo git (clonado pelo operador)
+/opt/vipcamv2/                          ← repo git (clonado pelo operador)
 ├── packages/edge        ← rodando como systemd unit vipcam-edge.service
 ├── packages/web         ← rodando como systemd unit vipcam-web.service
 ├── packages/reid        ← rodando como vipcam-reid.service (Fase 6+)
@@ -59,10 +59,10 @@ mv ~/.bun /home/vipcam/.bun  # opcional: bun no home do service user
 apt update && apt install -y docker.io docker-compose-plugin nginx certbot python3-certbot-nginx
 
 # 2. Clone o repo no caminho convencional
-sudo mkdir -p /opt/vipcam
-sudo chown $USER /opt/vipcam
-git clone <URL_DO_REPO> /opt/vipcam
-cd /opt/vipcam
+sudo mkdir -p /opt/vipcamv2
+sudo chown $USER /opt/vipcamv2
+git clone <URL_DO_REPO> /opt/vipcamv2
+cd /opt/vipcamv2
 
 # 3. Rode o instalador — cria user, dirs, systemd units, vhost (sem ativar)
 sudo ./infra/install.sh
@@ -73,7 +73,7 @@ sudo ./infra/install.sh
 #    - certbot certonly --webroot ...
 #    - ln vhost em sites-enabled + reload nginx
 #    - systemctl enable --now vipcam-edge vipcam-web
-#    - sudo /opt/vipcam/scripts/deploy.sh
+#    - sudo /opt/vipcamv2/scripts/deploy.sh
 
 # 5. Verificação
 curl -i https://monitoramento.franquiabv.com.br/api/health
@@ -83,9 +83,9 @@ curl -I https://monitoramento.franquiabv.com.br
 ## Deploy regular (após mudança de código)
 
 ```bash
-sudo /opt/vipcam/scripts/deploy.sh           # deploya master
-sudo /opt/vipcam/scripts/deploy.sh main      # outro branch
-BRANCH=feat/foo sudo /opt/vipcam/scripts/deploy.sh  # via env
+sudo /opt/vipcamv2/scripts/deploy.sh           # deploya master
+sudo /opt/vipcamv2/scripts/deploy.sh main      # outro branch
+BRANCH=feat/foo sudo /opt/vipcamv2/scripts/deploy.sh  # via env
 ```
 
 O script faz, em ordem, com **rollback automático em falha**:
@@ -103,7 +103,7 @@ O script faz, em ordem, com **rollback automático em falha**:
 ## Rollback manual
 
 ```bash
-cd /opt/vipcam
+cd /opt/vipcamv2
 sudo -u vipcam git log --oneline -10           # escolher SHA
 sudo -u vipcam git reset --hard <SHA>
 sudo -u vipcam bun install --frozen-lockfile
@@ -153,7 +153,7 @@ VIPCam **não interfere** com outros sites:
 - **nginx:** vhost dedicado por `server_name monitoramento.franquiabv.com.br`
   (não pega tráfego de outros domínios)
 - **systemd:** units no namespace `vipcam-*` (sem colisão)
-- **filesystem:** todos os artefatos em `/opt/vipcam`, `/etc/vipcam`,
+- **filesystem:** todos os artefatos em `/opt/vipcamv2`, `/etc/vipcam`,
   `/var/log/vipcam` (sem espalhar)
 - **usuário:** processo roda como `vipcam` (não-privilegiado)
 
@@ -167,7 +167,7 @@ sudo rm /etc/nginx/sites-enabled/monitoramento.franquiabv.com.br.conf
 sudo rm /etc/nginx/sites-available/monitoramento.franquiabv.com.br.conf
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot delete --cert-name monitoramento.franquiabv.com.br  # opcional
-docker compose -f /opt/vipcam/docker-compose.yml down -v
+docker compose -f /opt/vipcamv2/docker-compose.yml down -v
 sudo userdel -r vipcam
-sudo rm -rf /opt/vipcam /etc/vipcam /var/log/vipcam
+sudo rm -rf /opt/vipcamv2 /etc/vipcam /var/log/vipcam
 ```

@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/vipcam}"
+APP_DIR="${APP_DIR:-/opt/vipcamv2}"
 SERVICE_USER="${SERVICE_USER:-vipcam}"
 BRANCH="${1:-${BRANCH:-master}}"
 EDGE_PORT="${EDGE_PORT:-4001}"

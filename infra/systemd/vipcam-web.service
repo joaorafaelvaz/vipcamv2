@@ -8,12 +8,12 @@ Wants=network-online.target
 Type=simple
 User=vipcam
 Group=vipcam
-WorkingDirectory=/opt/vipcam/packages/web
+WorkingDirectory=/opt/vipcamv2/packages/web
 EnvironmentFile=/etc/vipcam/web.env
 # PORT=3035 vence sobre defaults internos do Next quando "next start" é chamado sem -p
 Environment=PORT=3035
 Environment=NODE_ENV=production
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/vipcam/.bun/bin
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/local/bin/bun run start
 Restart=on-failure
 RestartSec=5s
@@ -28,7 +28,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/vipcam/packages/web/.next /var/log/vipcam
+ReadWritePaths=/opt/vipcamv2/packages/web/.next /var/log/vipcam
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
