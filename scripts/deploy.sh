@@ -64,10 +64,25 @@ if [[ -f packages/shared/package.json ]]; then
 fi
 
 # ----- 5. Migrações (idempotente, skip se ainda não há tabelas) -----
+# Note: db:migrate precisa de DATABASE_URL no env. Como systemd carrega
+# /etc/vipcam/edge.env via EnvironmentFile mas `bun run` não, exportamos
+# manualmente com `set -a` antes do migrate. Service user vipcam tem
+# permissão de leitura no /etc/vipcam/edge.env (chmod 640 root:vipcam).
 MIG_DIR="packages/edge/src/persistence/migrations"
+EDGE_ENV="/etc/vipcam/edge.env"
 if [[ -d "$MIG_DIR" ]] && compgen -G "$MIG_DIR/*.sql" > /dev/null; then
-  log "rodando db:migrate"
-  sudo -u "$SERVICE_USER" bash -c "cd packages/edge && bun run db:migrate"
+  # Confirma que o service user consegue ler o env file
+  if ! sudo -u "$SERVICE_USER" test -r "$EDGE_ENV"; then
+    fail "migrations precisam de DATABASE_URL mas $EDGE_ENV não é legível pelo user $SERVICE_USER"
+  fi
+  log "rodando db:migrate (carregando env de $EDGE_ENV)"
+  sudo -u "$SERVICE_USER" bash -c "
+    cd packages/edge
+    set -a
+    source $EDGE_ENV
+    set +a
+    bun run db:migrate
+  "
 else
   log "sem migrações para aplicar (Onda 2 ainda não landed)"
 fi
