@@ -4,3 +4,5 @@ export * from "./face-records.js";
 export * from "./sessions.js";
 export * from "./detections.js";
 export * from "./sentiment-records.js";
+export * from "./erp-cache.js";
+export * from "./match-attempts.js";
