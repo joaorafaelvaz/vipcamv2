@@ -83,6 +83,17 @@ mkdir -p /etc/vipcam
 chown "root:$SERVICE_USER" /etc/vipcam
 chmod 750 /etc/vipcam
 
+# Corrige ownership dos env files se já existirem (cp manual preserva root:root,
+# mas service user precisa do grupo pra ler com chmod 640).
+for envf in /etc/vipcam/edge.env /etc/vipcam/web.env; do
+  if [[ -f "$envf" ]]; then
+    chown "root:$SERVICE_USER" "$envf"
+    log "  fixed ownership: $envf -> root:$SERVICE_USER"
+  fi
+done
+[[ -f /etc/vipcam/edge.env ]] && chmod 640 /etc/vipcam/edge.env
+[[ -f /etc/vipcam/web.env ]] && chmod 644 /etc/vipcam/web.env
+
 # ----- 3. /var/log/vipcam (legacy — journald é o canal principal) -----
 log "preparando /var/log/vipcam"
 mkdir -p /var/log/vipcam
@@ -138,8 +149,10 @@ log ""
 log "1. Crie os env files (NÃO faça commit):"
 log "   sudo cp $APP_DIR/infra/env-templates/edge.env.example /etc/vipcam/edge.env"
 log "   sudo cp $APP_DIR/infra/env-templates/web.env.example  /etc/vipcam/web.env"
-log "   sudo chmod 640 /etc/vipcam/edge.env"
+log "   sudo chown root:$SERVICE_USER /etc/vipcam/{edge,web}.env"
+log "   sudo chmod 640 /etc/vipcam/edge.env && sudo chmod 644 /etc/vipcam/web.env"
 log "   sudo nano /etc/vipcam/edge.env   # preencher API_KEY, DATABASE_URL, etc"
+log "   (re-rode 'sudo $APP_DIR/infra/install.sh' depois — vai corrigir ownership idempotente)"
 log ""
 log "2. Suba o Postgres (na própria máquina, via docker-compose):"
 log "   cd $APP_DIR && docker compose up -d postgres"
