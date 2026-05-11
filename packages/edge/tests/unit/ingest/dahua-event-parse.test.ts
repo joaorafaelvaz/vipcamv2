@@ -3,8 +3,7 @@ import { parseDahuaEventLine } from "../../../src/ingest/dahua-event-parse.js";
 
 describe("parseDahuaEventLine", () => {
   test("extrai code/action/data de uma linha Dahua válida", () => {
-    const raw =
-      'Code=FaceDetection;action=Start;index=0;data={"Object":{"Age":30,"Sex":"Man"}}';
+    const raw = 'Code=FaceDetection;action=Start;index=0;data={"Object":{"Age":30,"Sex":"Man"}}';
     const parsed = parseDahuaEventLine(raw);
     expect(parsed?.code).toBe("FaceDetection");
     expect(parsed?.action).toBe("Start");

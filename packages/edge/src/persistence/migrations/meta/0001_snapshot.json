@@ -347,12 +347,8 @@
           "name": "face_records_person_id_persons_id_fk",
           "tableFrom": "face_records",
           "tableTo": "persons",
-          "columnsFrom": [
-            "person_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -368,11 +364,7 @@
     "public.person_type": {
       "name": "person_type",
       "schema": "public",
-      "values": [
-        "client",
-        "employee",
-        "anonymous"
-      ]
+      "values": ["client", "employee", "anonymous"]
     }
   },
   "schemas": {},

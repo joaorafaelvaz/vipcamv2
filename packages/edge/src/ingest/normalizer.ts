@@ -51,34 +51,34 @@ function dahuaBoolean(raw: unknown, trueValue = 2): boolean | undefined {
 
 function extractAttrs(obj: Record<string, unknown>): FaceAttributes {
   const attrs: FaceAttributes = { raw: obj };
-  const age = Number(obj["Age"]);
+  const age = Number(obj.Age);
   if (Number.isFinite(age) && age > 0) attrs.age = age;
 
-  const gender = parseGender(obj["Sex"], obj["Gender"]);
+  const gender = parseGender(obj.Sex, obj.Gender);
   if (gender) attrs.gender = gender;
 
-  if (typeof obj["Emotion"] === "string") attrs.emotion = obj["Emotion"];
-  if (typeof obj["Express"] === "number") attrs.emotion_intensity = obj["Express"];
+  if (typeof obj.Emotion === "string") attrs.emotion = obj.Emotion;
+  if (typeof obj.Express === "number") attrs.emotion_intensity = obj.Express;
 
   // Acessórios / oclusão
-  const glasses = dahuaBoolean(obj["Glass"]);
+  const glasses = dahuaBoolean(obj.Glass);
   if (glasses !== undefined) attrs.glasses = glasses;
-  const mask = dahuaBoolean(obj["Mask"]);
+  const mask = dahuaBoolean(obj.Mask);
   if (mask !== undefined) attrs.mask = mask;
-  const beard = dahuaBoolean(obj["Beard"]);
+  const beard = dahuaBoolean(obj.Beard);
   if (beard !== undefined) attrs.beard = beard;
-  const mouthOpen = dahuaBoolean(obj["Mouth"]);
+  const mouthOpen = dahuaBoolean(obj.Mouth);
   if (mouthOpen !== undefined) attrs.mouth_open = mouthOpen;
-  const eyesOpen = dahuaBoolean(obj["Eye"]);
+  const eyesOpen = dahuaBoolean(obj.Eye);
   if (eyesOpen !== undefined) attrs.eyes_open = eyesOpen;
 
   // Qualidade
-  if (typeof obj["Confidence"] === "number") attrs.confidence = obj["Confidence"];
-  if (typeof obj["FaceQuality"] === "number") attrs.face_quality = obj["FaceQuality"];
+  if (typeof obj.Confidence === "number") attrs.confidence = obj.Confidence;
+  if (typeof obj.FaceQuality === "number") attrs.face_quality = obj.FaceQuality;
 
   // Geometria
-  if (Array.isArray(obj["Angle"]) && obj["Angle"].length === 3) {
-    const [pitch, yaw, roll] = (obj["Angle"] as unknown[]).map(Number);
+  if (Array.isArray(obj.Angle) && obj.Angle.length === 3) {
+    const [pitch, yaw, roll] = (obj.Angle as unknown[]).map(Number);
     if (pitch !== undefined && Number.isFinite(pitch)) attrs.pitch_deg = pitch;
     if (yaw !== undefined && Number.isFinite(yaw)) attrs.yaw_deg = yaw;
     if (roll !== undefined && Number.isFinite(roll)) attrs.roll_deg = roll;
@@ -98,17 +98,17 @@ export function normalize(raw: CapturedEvent, cameraId: string): CanonicalEvent 
 
   // Atributos vêm de data.Object (singular). data.Faces[] e data.Objects[] são
   // arrays com a mesma info, mas Object é onde Dahua coloca o detalhamento completo.
-  const objectField = dataObj["Object"];
+  const objectField = dataObj.Object;
   if (!objectField || typeof objectField !== "object") return null;
   const obj = objectField as Record<string, unknown>;
 
-  const trackId = obj["ObjectID"] !== undefined ? String(obj["ObjectID"]) : undefined;
-  const bbox = parseBbox(obj["BoundingBox"]);
+  const trackId = obj.ObjectID !== undefined ? String(obj.ObjectID) : undefined;
+  const bbox = parseBbox(obj.BoundingBox);
   const attrs = extractAttrs(obj);
 
   // Timestamp: prefere RealUTC do payload (relógio confiável da câmera) sobre received_at
   let detectedAt = raw.received_at;
-  const realUtc = dataObj["RealUTC"];
+  const realUtc = dataObj.RealUTC;
   if (typeof realUtc === "number" && realUtc > 0) {
     detectedAt = new Date(realUtc * 1000).toISOString();
   }

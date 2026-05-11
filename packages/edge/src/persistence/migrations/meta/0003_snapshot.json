@@ -347,12 +347,8 @@
           "name": "face_records_person_id_persons_id_fk",
           "tableFrom": "face_records",
           "tableTo": "persons",
-          "columnsFrom": [
-            "person_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -532,12 +528,8 @@
           "name": "sessions_person_id_persons_id_fk",
           "tableFrom": "sessions",
           "tableTo": "persons",
-          "columnsFrom": [
-            "person_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -545,12 +537,8 @@
           "name": "sessions_camera_id_cameras_id_fk",
           "tableFrom": "sessions",
           "tableTo": "cameras",
-          "columnsFrom": [
-            "camera_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["camera_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -723,12 +711,8 @@
           "name": "detections_camera_id_cameras_id_fk",
           "tableFrom": "detections",
           "tableTo": "cameras",
-          "columnsFrom": [
-            "camera_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["camera_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -736,12 +720,8 @@
           "name": "detections_person_id_persons_id_fk",
           "tableFrom": "detections",
           "tableTo": "persons",
-          "columnsFrom": [
-            "person_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -749,12 +729,8 @@
           "name": "detections_session_id_sessions_id_fk",
           "tableFrom": "detections",
           "tableTo": "sessions",
-          "columnsFrom": [
-            "session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -856,12 +832,8 @@
           "name": "sentiment_records_detection_id_detections_id_fk",
           "tableFrom": "sentiment_records",
           "tableTo": "detections",
-          "columnsFrom": [
-            "detection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["detection_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -869,12 +841,8 @@
           "name": "sentiment_records_session_id_sessions_id_fk",
           "tableFrom": "sentiment_records",
           "tableTo": "sessions",
-          "columnsFrom": [
-            "session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -882,12 +850,8 @@
           "name": "sentiment_records_person_id_persons_id_fk",
           "tableFrom": "sentiment_records",
           "tableTo": "persons",
-          "columnsFrom": [
-            "person_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1273,12 +1237,8 @@
           "name": "match_attempts_detection_id_detections_id_fk",
           "tableFrom": "match_attempts",
           "tableTo": "detections",
-          "columnsFrom": [
-            "detection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["detection_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1286,12 +1246,8 @@
           "name": "match_attempts_erp_checkin_id_erp_checkins_erp_id_fk",
           "tableFrom": "match_attempts",
           "tableTo": "erp_checkins",
-          "columnsFrom": [
-            "erp_checkin_id"
-          ],
-          "columnsTo": [
-            "erp_id"
-          ],
+          "columnsFrom": ["erp_checkin_id"],
+          "columnsTo": ["erp_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1307,28 +1263,17 @@
     "public.person_type": {
       "name": "person_type",
       "schema": "public",
-      "values": [
-        "client",
-        "employee",
-        "anonymous"
-      ]
+      "values": ["client", "employee", "anonymous"]
     },
     "public.match_decided_by": {
       "name": "match_decided_by",
       "schema": "public",
-      "values": [
-        "system",
-        "user"
-      ]
+      "values": ["system", "user"]
     },
     "public.match_decision": {
       "name": "match_decision",
       "schema": "public",
-      "values": [
-        "auto_matched",
-        "ambiguous",
-        "rejected"
-      ]
+      "values": ["auto_matched", "ambiguous", "rejected"]
     }
   },
   "schemas": {},

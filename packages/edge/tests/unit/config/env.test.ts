@@ -64,8 +64,6 @@ describe("parseEnv", () => {
   });
 
   test("rejeita DATABASE_URL com schema inválido", () => {
-    expect(() =>
-      parseEnv({ API_KEY: "k", DATABASE_URL: "sqlite:///vipcam.db" }),
-    ).toThrow();
+    expect(() => parseEnv({ API_KEY: "k", DATABASE_URL: "sqlite:///vipcam.db" })).toThrow();
   });
 });

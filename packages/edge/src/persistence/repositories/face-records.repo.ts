@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../db.js";
-import { type FaceRecord, faceRecords, type NewFaceRecord } from "../schema/face-records.js";
+import { type FaceRecord, type NewFaceRecord, faceRecords } from "../schema/face-records.js";
 
 export const faceRecordsRepo = {
   async create(data: Omit<NewFaceRecord, "id">): Promise<FaceRecord> {

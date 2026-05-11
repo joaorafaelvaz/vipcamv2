@@ -1,13 +1,5 @@
 import { sql } from "drizzle-orm";
-import {
-  boolean,
-  customType,
-  index,
-  pgTable,
-  text,
-  timestamp,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { boolean, customType, index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { persons } from "./persons.js";
 
 // pgvector custom type — vetor de 512 dimensões usado pelo failover B (InsightFace buffalo_s).

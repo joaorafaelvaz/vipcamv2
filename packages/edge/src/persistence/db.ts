@@ -1,4 +1,4 @@
-import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { type PostgresJsDatabase, drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { getEnv } from "../config/env.js";
 import { logger } from "../obs/logger.js";

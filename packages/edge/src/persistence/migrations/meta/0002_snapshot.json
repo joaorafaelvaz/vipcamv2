@@ -347,12 +347,8 @@
           "name": "face_records_person_id_persons_id_fk",
           "tableFrom": "face_records",
           "tableTo": "persons",
-          "columnsFrom": [
-            "person_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -532,12 +528,8 @@
           "name": "sessions_person_id_persons_id_fk",
           "tableFrom": "sessions",
           "tableTo": "persons",
-          "columnsFrom": [
-            "person_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -545,12 +537,8 @@
           "name": "sessions_camera_id_cameras_id_fk",
           "tableFrom": "sessions",
           "tableTo": "cameras",
-          "columnsFrom": [
-            "camera_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["camera_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -723,12 +711,8 @@
           "name": "detections_camera_id_cameras_id_fk",
           "tableFrom": "detections",
           "tableTo": "cameras",
-          "columnsFrom": [
-            "camera_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["camera_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -736,12 +720,8 @@
           "name": "detections_person_id_persons_id_fk",
           "tableFrom": "detections",
           "tableTo": "persons",
-          "columnsFrom": [
-            "person_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -749,12 +729,8 @@
           "name": "detections_session_id_sessions_id_fk",
           "tableFrom": "detections",
           "tableTo": "sessions",
-          "columnsFrom": [
-            "session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -856,12 +832,8 @@
           "name": "sentiment_records_detection_id_detections_id_fk",
           "tableFrom": "sentiment_records",
           "tableTo": "detections",
-          "columnsFrom": [
-            "detection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["detection_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -869,12 +841,8 @@
           "name": "sentiment_records_session_id_sessions_id_fk",
           "tableFrom": "sentiment_records",
           "tableTo": "sessions",
-          "columnsFrom": [
-            "session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -882,12 +850,8 @@
           "name": "sentiment_records_person_id_persons_id_fk",
           "tableFrom": "sentiment_records",
           "tableTo": "persons",
-          "columnsFrom": [
-            "person_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -903,11 +867,7 @@
     "public.person_type": {
       "name": "person_type",
       "schema": "public",
-      "values": [
-        "client",
-        "employee",
-        "anonymous"
-      ]
+      "values": ["client", "employee", "anonymous"]
     }
   },
   "schemas": {},

@@ -89,7 +89,7 @@ describe("normalize (Dahua nested payload)", () => {
 
   test("Sex 'Woman' mapeia para 'female'", () => {
     const data = realFixture.parsed?.data as Record<string, unknown>;
-    const obj = data["Object"] as Record<string, unknown>;
+    const obj = data.Object as Record<string, unknown>;
     const womanFixture: CapturedEvent = {
       ...realFixture,
       parsed: {

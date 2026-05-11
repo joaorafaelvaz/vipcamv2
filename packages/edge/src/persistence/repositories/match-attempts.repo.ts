@@ -2,8 +2,8 @@ import { desc, eq } from "drizzle-orm";
 import { getDb } from "../db.js";
 import {
   type MatchAttempt,
-  matchAttempts,
   type NewMatchAttempt,
+  matchAttempts,
 } from "../schema/match-attempts.js";
 
 export const matchAttemptsRepo = {

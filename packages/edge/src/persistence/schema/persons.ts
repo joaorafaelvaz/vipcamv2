@@ -21,9 +21,7 @@ export const persons = pgTable(
     person_type: personType("person_type").notNull().default("anonymous"),
     erp_client_id: text("erp_client_id"),
     erp_employee_id: text("erp_employee_id"),
-    first_seen_at: timestamp("first_seen_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    first_seen_at: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
     last_seen_at: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     total_visits: integer("total_visits").notNull().default(1),
     avg_satisfaction: real("avg_satisfaction"),

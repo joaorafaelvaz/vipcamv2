@@ -1,6 +1,6 @@
 import { and, asc, between, desc, eq, isNull } from "drizzle-orm";
 import { getDb } from "../db.js";
-import { type Detection, detections, type NewDetection } from "../schema/detections.js";
+import { type Detection, type NewDetection, detections } from "../schema/detections.js";
 
 export const detectionsRepo = {
   async create(data: Omit<NewDetection, "id">): Promise<Detection> {

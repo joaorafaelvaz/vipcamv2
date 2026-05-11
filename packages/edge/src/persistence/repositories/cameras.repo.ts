@@ -1,6 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { getDb } from "../db.js";
-import { type Camera, cameras, type NewCamera } from "../schema/cameras.js";
+import { type Camera, type NewCamera, cameras } from "../schema/cameras.js";
 
 export const camerasRepo = {
   async create(data: Omit<NewCamera, "id">): Promise<Camera> {

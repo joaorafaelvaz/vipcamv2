@@ -16,10 +16,7 @@ export const detections = pgTable(
     // ID de tracking dentro da sessão da câmera (não estável entre sessões)
     track_id: text("track_id"),
     bbox: jsonb("bbox").$type<{ x: number; y: number; w: number; h: number }>(),
-    face_attrs: jsonb("face_attrs")
-      .$type<Record<string, unknown>>()
-      .notNull()
-      .default(sql`'{}'`),
+    face_attrs: jsonb("face_attrs").$type<Record<string, unknown>>().notNull().default(sql`'{}'`),
     dominant_emotion: text("dominant_emotion"),
     emotion_confidence: real("emotion_confidence"),
     snapshot_path: text("snapshot_path"),

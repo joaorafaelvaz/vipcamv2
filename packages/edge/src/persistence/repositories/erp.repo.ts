@@ -4,12 +4,12 @@ import {
   type ErpCheckin,
   type ErpClient,
   type ErpEmployee,
-  erpCheckins,
-  erpClients,
-  erpEmployees,
   type NewErpCheckin,
   type NewErpClient,
   type NewErpEmployee,
+  erpCheckins,
+  erpClients,
+  erpEmployees,
 } from "../schema/erp-cache.js";
 
 /**
