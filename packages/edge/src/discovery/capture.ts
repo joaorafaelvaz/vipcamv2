@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseDahuaEventLine } from "../ingest/dahua-event-parse.js";
 import type { DahuaHttpClient } from "../ingest/dahua-http-client.js";
 import { logger } from "../obs/logger.js";
 
@@ -59,29 +60,8 @@ export function parseMultipartChunks(buf: Buffer, boundary: string): ParseResult
 }
 
 function tryParseDahuaEventLine(raw: string): CapturedEvent["parsed"] {
-  // Linhas Dahua: "Code=VideoMotion;action=Start;index=0;data={...}"
-  // Retorna undefined quando nada relevante foi extraído (vs. {} que parecia
-  // "parseou mas vazio"); mantém o contrato de `parsed?` semanticamente honesto.
-  const out: { code?: string; action?: string; data?: unknown } = {};
-  for (const seg of raw.split(";")) {
-    const eq = seg.indexOf("=");
-    if (eq < 0) continue;
-    const k = seg.slice(0, eq).trim().toLowerCase();
-    const v = seg.slice(eq + 1).trim();
-    if (k === "code") out.code = v;
-    else if (k === "action") out.action = v;
-    else if (k === "data") {
-      try {
-        out.data = JSON.parse(v);
-      } catch {
-        out.data = v;
-      }
-    }
-  }
-  if (out.code === undefined && out.action === undefined && out.data === undefined) {
-    return undefined;
-  }
-  return out;
+  // Delega para o parser shared (extraído em Onda 2 Task 2.11).
+  return parseDahuaEventLine(raw);
 }
 
 export async function captureEvents(

@@ -13,6 +13,10 @@ const envSchema = z
       .optional(),
     CAMERA_USER: z.string().optional(),
     CAMERA_PASS: z.string().optional(),
+    DATABASE_URL: z
+      .string()
+      .regex(/^postgres(ql)?:\/\//, "DATABASE_URL must start with postgres:// or postgresql://")
+      .optional(),
   })
   .refine(
     (v) =>

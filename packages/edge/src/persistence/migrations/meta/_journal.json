@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1778525490738,
+      "tag": "0000_concerned_smiling_tiger",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778525630741,
+      "tag": "0001_cynical_preak",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778525730664,
+      "tag": "0002_redundant_white_tiger",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778525817807,
+      "tag": "0003_sour_vector",
+      "breakpoints": true
+    }
+  ]
+}

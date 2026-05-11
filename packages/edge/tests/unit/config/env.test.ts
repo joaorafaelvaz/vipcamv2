@@ -49,4 +49,21 @@ describe("parseEnv", () => {
       parseEnv({ API_KEY: "k", CAMERA_IP: "not-an-ip", CAMERA_USER: "a", CAMERA_PASS: "b" }),
     ).toThrow();
   });
+
+  test("aceita DATABASE_URL válido (postgres://)", () => {
+    const result = parseEnv({
+      API_KEY: "k",
+      DATABASE_URL: "postgres://vipcam:vipcam@localhost:5432/vipcam",
+    });
+    expect(result.DATABASE_URL).toBe("postgres://vipcam:vipcam@localhost:5432/vipcam");
+  });
+
+  test("permite DATABASE_URL ausente (modo sem DB)", () => {
+    const result = parseEnv({ API_KEY: "k" });
+    expect(result.DATABASE_URL).toBeUndefined();
+  });
+
+  test("rejeita DATABASE_URL com schema inválido", () => {
+    expect(() => parseEnv({ API_KEY: "k", DATABASE_URL: "sqlite:///vipcam.db" })).toThrow();
+  });
 });
