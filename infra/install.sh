@@ -42,27 +42,39 @@ fi
 # Dono dos arquivos do repo
 chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
 
-# ----- 1.5. Symlink global do bun -----
-# Bun é instalado por usuário (default ~/.bun/bin/bun). Pro systemd unit
-# achar via /usr/local/bin/bun (PATH padrão), criamos symlink. Idempotente.
-if [[ ! -e /usr/local/bin/bun ]]; then
-  BUN_PATH=""
-  for candidate in /root/.bun/bin/bun /home/*/.bun/bin/bun; do
-    if [[ -x "$candidate" ]]; then
-      BUN_PATH="$candidate"
-      break
-    fi
-  done
-  if [[ -n "$BUN_PATH" ]]; then
-    log "symlink: /usr/local/bin/bun -> $BUN_PATH"
-    ln -sf "$BUN_PATH" /usr/local/bin/bun
-  else
-    warn "bun não encontrado em /root/.bun/bin nem /home/*/.bun/bin"
-    warn "  instale: curl -fsSL https://bun.sh/install | bash"
-    warn "  ou crie o symlink manualmente: ln -sf <PATH_DO_BUN> /usr/local/bin/bun"
+# ----- 1.5. Bun global em /usr/local/bin -----
+# Bun é instalado por usuário (default ~/.bun/bin/bun). Para o systemd
+# unit (rodando como user 'vipcam') conseguir executá-lo, precisamos
+# COPIAR o binário (não symlinkar) — caso contrário o symlink resolveria
+# para /root/.bun/bin/bun e /root é tipicamente chmod 700, sem acesso
+# pro vipcam.
+BUN_SRC=""
+for candidate in /root/.bun/bin/bun /home/*/.bun/bin/bun; do
+  if [[ -x "$candidate" ]]; then
+    BUN_SRC="$candidate"
+    break
   fi
+done
+
+if [[ -z "$BUN_SRC" ]]; then
+  warn "bun não encontrado em /root/.bun/bin nem /home/*/.bun/bin"
+  warn "  instale: curl -fsSL https://bun.sh/install | bash"
+  warn "  depois re-rode este script"
 else
-  log "/usr/local/bin/bun já existe"
+  # Remove symlink legado (se foi criado por versão antiga deste install.sh)
+  if [[ -L /usr/local/bin/bun ]]; then
+    log "removendo symlink legado /usr/local/bin/bun"
+    rm /usr/local/bin/bun
+  fi
+  # Copia se ausente OU se source é mais recente que destino
+  if [[ ! -f /usr/local/bin/bun ]] || [[ "$BUN_SRC" -nt /usr/local/bin/bun ]]; then
+    log "copiando bun: $BUN_SRC -> /usr/local/bin/bun"
+    cp "$BUN_SRC" /usr/local/bin/bun
+    chmod 755 /usr/local/bin/bun
+    chown root:root /usr/local/bin/bun
+  else
+    log "/usr/local/bin/bun atualizado (não copia)"
+  fi
 fi
 
 # ----- 2. /etc/vipcam (envs) -----
@@ -77,9 +89,17 @@ mkdir -p /var/log/vipcam
 chown "$SERVICE_USER:$SERVICE_USER" /var/log/vipcam
 
 # ----- 4. Diretórios de runtime gravados pelo serviço -----
-log "preparando /opt/vipcamv2/{snapshots,discovery-output}"
-mkdir -p "$APP_DIR/snapshots" "$APP_DIR/discovery-output"
-chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR/snapshots" "$APP_DIR/discovery-output"
+log "preparando $APP_DIR/{snapshots,discovery-output,packages/web/.next}"
+# .next/ precisa existir antes do systemd subir vipcam-web (ReadWritePaths
+# falha com 226/NAMESPACE se o caminho não existir; deploy.sh popula depois)
+mkdir -p \
+  "$APP_DIR/snapshots" \
+  "$APP_DIR/discovery-output" \
+  "$APP_DIR/packages/web/.next"
+chown -R "$SERVICE_USER:$SERVICE_USER" \
+  "$APP_DIR/snapshots" \
+  "$APP_DIR/discovery-output" \
+  "$APP_DIR/packages/web/.next"
 
 # ----- 5. systemd units -----
 log "instalando systemd units"
