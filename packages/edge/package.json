@@ -8,7 +8,10 @@
     "start": "bun src/main.ts",
     "test": "bun test",
     "test:watch": "bun test --watch",
-    "typecheck": "bun --bun tsc --noEmit"
+    "typecheck": "bun --bun tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun src/persistence/migrate.ts",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
     "@vipcam/shared": "workspace:*",
