@@ -32,7 +32,12 @@ async function resolveSessionId(
   detectedAt: Date,
 ): Promise<string> {
   const existing = event.track_id
-    ? await sessionsRepo.findOpenForTrack(event.camera_id, event.track_id, SESSION_GAP_MS)
+    ? await sessionsRepo.findOpenForTrack(
+        event.camera_id,
+        event.track_id,
+        detectedAt,
+        SESSION_GAP_MS,
+      )
     : null;
 
   if (existing && !shouldStartNewSession(existing.last_seen_at, detectedAt, SESSION_GAP_MS)) {

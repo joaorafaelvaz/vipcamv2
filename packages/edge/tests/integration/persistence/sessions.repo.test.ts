@@ -26,12 +26,12 @@ describe("sessionsRepo", () => {
       last_seen_at: fiveSecondsAgo,
     });
 
-    // Gap 30s: sessão de 5s atrás está dentro -> reusa
-    const inside = await sessionsRepo.findOpenForTrack(cam.id, "track-A", 30_000);
+    // Gap 30s a partir de now: sessão de 5s atrás está dentro -> reusa
+    const inside = await sessionsRepo.findOpenForTrack(cam.id, "track-A", now, 30_000);
     expect(inside?.id).toBe(recent.id);
 
-    // Gap 1s: sessão de 5s atrás está fora -> null
-    const outside = await sessionsRepo.findOpenForTrack(cam.id, "track-A", 1_000);
+    // Gap 1s a partir de now: sessão de 5s atrás está fora -> null
+    const outside = await sessionsRepo.findOpenForTrack(cam.id, "track-A", now, 1_000);
     expect(outside).toBeNull();
   });
 
@@ -46,7 +46,7 @@ describe("sessionsRepo", () => {
     });
     await sessionsRepo.close(s.id, new Date());
 
-    const found = await sessionsRepo.findOpenForTrack(cam.id, "track-B", 60_000);
+    const found = await sessionsRepo.findOpenForTrack(cam.id, "track-B", now, 60_000);
     expect(found).toBeNull();
   });
 
@@ -64,7 +64,7 @@ describe("sessionsRepo", () => {
     await sessionsRepo.appendDetection(s.id, later);
     await sessionsRepo.appendDetection(s.id, later);
 
-    const refetched = await sessionsRepo.findOpenForTrack(cam.id, "t", 60_000);
+    const refetched = await sessionsRepo.findOpenForTrack(cam.id, "t", later, 60_000);
     expect(refetched?.detection_count).toBe(2);
     expect(refetched?.last_seen_at.getTime()).toBe(later.getTime());
   });

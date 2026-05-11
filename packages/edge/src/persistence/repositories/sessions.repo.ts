@@ -7,13 +7,18 @@ export const sessionsRepo = {
    * Busca sessão aberta para (camera, track) que ainda esteja dentro do gap
    * temporal — usado pelo session-tracker para reusar sessão entre detections
    * consecutivas do mesmo track. Se não achar, caller deve criar nova sessão.
+   *
+   * O `eventAt` (não Date.now()) é a base do cutoff — protege contra clock
+   * skew entre câmera e servidor: se câmera atrasa, ainda achamos a sessão;
+   * se servidor anda na frente, não promovemos eventos antigos artificialmente.
    */
   async findOpenForTrack(
     cameraId: string,
     trackId: string,
+    eventAt: Date,
     gapMs: number,
   ): Promise<Session | null> {
-    const cutoff = new Date(Date.now() - gapMs);
+    const cutoff = new Date(eventAt.getTime() - gapMs);
     const rows = await getDb()
       .select()
       .from(sessions)
