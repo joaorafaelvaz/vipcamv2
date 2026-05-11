@@ -30,7 +30,10 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/log/vipcam /opt/vipcamv2/discovery-output /opt/vipcamv2/snapshots
+# Bun precisa escrever em ~/.bun/install/cache, node_modules/.cache,
+# e o WorkingDirectory pode receber arquivos. Damos write em /opt/vipcamv2
+# inteiro (já é um diretório dedicado da app, isolamento mantido).
+ReadWritePaths=/var/log/vipcam /opt/vipcamv2 /tmp
 # Permite só localhost + rede da câmera/ERP — ajustar se câmera está em VLAN diferente
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 

@@ -28,7 +28,9 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/vipcamv2/packages/web/.next /var/log/vipcam
+# Next.js precisa escrever em .next/, e Bun em ~/.bun/install/cache,
+# node_modules/.cache. Damos write em /opt/vipcamv2 inteiro (escopo dedicado).
+ReadWritePaths=/var/log/vipcam /opt/vipcamv2 /tmp
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
