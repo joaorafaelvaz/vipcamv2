@@ -57,17 +57,23 @@ async function resolveSessionId(
  * Falhas em uma etapa NÃO derrubam o pipeline (try/catch granular).
  */
 export async function processEvent(raw: CapturedEvent, cameraId: string): Promise<void> {
-  const event = normalize(raw, cameraId);
-  if (!event) return;
-
-  // face.detected.stop é sinal pro tracker (caller pode usar pra fechar sessões),
-  // mas não cria nova detection — só Start cria registro.
-  if (event.type === "face.detected.stop") {
-    logger.debug({ track_id: event.track_id }, "face.detected.stop — no detection persisted");
-    return;
-  }
-
+  // Try/catch envolvendo TUDO — listener faz fire-and-forget (`void processEvent`),
+  // qualquer throw aqui viraria unhandled rejection. Spec §8.2.1: falha localizada
+  // nunca derruba o sistema.
   try {
+    const event = normalize(raw, cameraId);
+    if (!event) return;
+
+    // face.detected.stop é sinal pro tracker (caller pode usar pra fechar sessões),
+    // mas não cria nova detection — só Start cria registro.
+    // TODO(onda-3): wire face.detected.stop a sessionsRepo.close() para o
+    // (camera_id, track_id) correspondente — atualmente sessões abertas não
+    // fecham (mitigação: gap-based auto-expiration via findOpenForTrack cutoff).
+    if (event.type === "face.detected.stop") {
+      logger.debug({ track_id: event.track_id }, "face.detected.stop — no detection persisted");
+      return;
+    }
+
     const detectedAt = new Date(event.detected_at);
     const personId = await resolvePersonId(event);
     const sessionId = await resolveSessionId(event, personId, detectedAt);

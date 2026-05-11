@@ -1,4 +1,4 @@
-import { and, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db.js";
 import { type NewSession, type Session, sessions } from "../schema/sessions.js";
 
@@ -25,6 +25,10 @@ export const sessionsRepo = {
           gte(sessions.last_seen_at, cutoff),
         ),
       )
+      // Determinístico: se houver mais de uma sessão aberta para o mesmo
+      // (camera, track) — caso de stale-open por falta de close — pega
+      // a mais recente.
+      .orderBy(desc(sessions.started_at))
       .limit(1);
     return rows[0] ?? null;
   },

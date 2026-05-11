@@ -1,3 +1,9 @@
+-- Ensure required Postgres extensions exist before face_records uses vector(512).
+-- pgcrypto: gen_random_uuid() default. Already shipped with pg16+ but explicit is safer.
+-- vector: pgvector — face_records.embedding column + HNSW index.
+-- Idempotent — safe to run on existing DBs.
+CREATE EXTENSION IF NOT EXISTS vector;--> statement-breakpoint
+CREATE EXTENSION IF NOT EXISTS pgcrypto;--> statement-breakpoint
 CREATE TYPE "public"."person_type" AS ENUM('client', 'employee', 'anonymous');--> statement-breakpoint
 CREATE TABLE "persons" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
