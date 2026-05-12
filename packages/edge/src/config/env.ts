@@ -21,6 +21,21 @@ const envSchema = z
       .string()
       .regex(/^mysql:\/\//, "ERP_MYSQL_URL must start with mysql://")
       .optional(),
+    // Queries SQL configuráveis pro ERP — defaults assumem schema padrão
+    // (employees/clients/checkins). Override via env se schema do ERP diverge.
+    ERP_QUERY_EMPLOYEES: z
+      .string()
+      .default(
+        "SELECT id, name, role, photo_url, photo_updated_at, is_active FROM employees WHERE is_active = 1",
+      ),
+    ERP_QUERY_CLIENTS: z
+      .string()
+      .default("SELECT id, name, phone, is_active FROM clients WHERE is_active = 1"),
+    ERP_QUERY_CHECKINS_SINCE: z
+      .string()
+      .default(
+        "SELECT id, client_id, event_type, occurred_at, metadata FROM checkins WHERE occurred_at >= ? ORDER BY occurred_at",
+      ),
   })
   .refine(
     (v) =>
