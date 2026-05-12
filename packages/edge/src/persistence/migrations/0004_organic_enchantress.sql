@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "cameras_active_ip_uniq" ON "cameras" USING btree ("ip_address") WHERE "cameras"."is_active" = true;
