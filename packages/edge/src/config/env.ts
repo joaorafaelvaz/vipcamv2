@@ -36,6 +36,11 @@ const envSchema = z
       .default(
         "SELECT id, client_id, event_type, occurred_at, metadata FROM checkins WHERE occurred_at >= ? ORDER BY occurred_at",
       ),
+    // Match temporal: janela ±N segundos em torno do checkin do ERP usada
+    // pra encontrar detections anônimas candidatas. Default 300s (±5min) —
+    // ajustar com base em volume real (horários de pico podem precisar
+    // janela menor pra reduzir ambiguidade).
+    MATCH_WINDOW_SECONDS: z.coerce.number().int().positive().default(300),
   })
   .refine(
     (v) =>
