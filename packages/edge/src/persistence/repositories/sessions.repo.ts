@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db.js";
+import { detections } from "../schema/detections.js";
 import { type NewSession, type Session, sessions } from "../schema/sessions.js";
 
 export const sessionsRepo = {
@@ -52,6 +53,8 @@ export const sessionsRepo = {
   /**
    * Anexa uma detection à sessão: incrementa contador e atualiza last_seen_at.
    * Usado em hot path do ingest, então 1 UPDATE atômico.
+   * (Recalculo de dominant_emotion vem depois via recalcDominantEmotion,
+   * porque precisa da detection já INSERIDA no DB.)
    */
   async appendDetection(sessionId: string, detectedAt: Date): Promise<void> {
     await getDb()
@@ -59,6 +62,33 @@ export const sessionsRepo = {
       .set({
         detection_count: sql`${sessions.detection_count} + 1`,
         last_seen_at: detectedAt,
+      })
+      .where(eq(sessions.id, sessionId));
+  },
+
+  /**
+   * Recalcula dominant_emotion da sessão via mode() (ordered-set aggregate
+   * do PostgreSQL — moda dos valores não-NULL). Chamar APÓS o insert de
+   * uma nova detection. Idempotente.
+   *
+   * Performance: subquery escaneia apenas linhas com session_id = X,
+   * sustentado pelo índice detections_session_idx. Custo: O(N) com N =
+   * detections da sessão (tipicamente <20 num intervalo de poucos minutos).
+   *
+   * Mantém o valor anterior (COALESCE) se ainda não há nenhuma detection
+   * com dominant_emotion populada — evita resetar pra NULL prematuramente.
+   */
+  async recalcDominantEmotion(sessionId: string): Promise<void> {
+    await getDb()
+      .update(sessions)
+      .set({
+        dominant_emotion: sql`COALESCE(
+          (SELECT mode() WITHIN GROUP (ORDER BY ${detections.dominant_emotion})
+           FROM ${detections}
+           WHERE ${detections.session_id} = ${sessionId}
+             AND ${detections.dominant_emotion} IS NOT NULL),
+          ${sessions.dominant_emotion}
+        )`,
       })
       .where(eq(sessions.id, sessionId));
   },
