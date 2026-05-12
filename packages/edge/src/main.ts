@@ -21,34 +21,59 @@ logger.info(
 // Inicia listeners de câmera quando DB + credenciais disponíveis.
 // Em modo discovery offline (sem DB ou sem credenciais) o servidor REST
 // continua funcional mas não há ingest ativo.
+//
+// Boot resilience: se Postgres estiver indisponível no boot (ex: docker-compose
+// não terminou de subir), tenta de novo a cada 5s por até 60s antes de desistir.
+// Sem isso, edge sobe sem listener e fica silenciosamente ocioso até o próximo
+// systemctl restart.
 const listenerHandles: ListenerHandle[] = [];
-if (env.DATABASE_URL && env.CAMERA_IP && env.CAMERA_USER && env.CAMERA_PASS) {
-  try {
-    const cameras = await camerasRepo.listActive();
-    for (const camera of cameras) {
-      const client = new DahuaHttpClient({
-        baseUrl: `http://${camera.ip_address}`,
-        username: env.CAMERA_USER,
-        password: env.CAMERA_PASS,
-      });
-      listenerHandles.push(startListener(camera, client));
-      logger.info({ cameraId: camera.id, ip: camera.ip_address }, "listener started");
-    }
-    if (cameras.length === 0) {
-      logger.warn("DATABASE_URL configured but no active cameras — seed the cameras table");
-    }
-  } catch (err) {
-    logger.error({ err }, "failed to start listeners — continuing without ingest");
+
+async function startListenersWithRetry(): Promise<void> {
+  if (!env.DATABASE_URL || !env.CAMERA_IP || !env.CAMERA_USER || !env.CAMERA_PASS) {
+    logger.warn(
+      {
+        hasDb: !!env.DATABASE_URL,
+        hasCamera: !!(env.CAMERA_IP && env.CAMERA_USER && env.CAMERA_PASS),
+      },
+      "listeners NOT started — DATABASE_URL or CAMERA_* missing",
+    );
+    return;
   }
-} else {
-  logger.warn(
-    {
-      hasDb: !!env.DATABASE_URL,
-      hasCamera: !!(env.CAMERA_IP && env.CAMERA_USER && env.CAMERA_PASS),
-    },
-    "listeners NOT started — DATABASE_URL or CAMERA_* missing",
-  );
+
+  const maxAttempts = 12; // 12 × 5s = 60s total
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const cameras = await camerasRepo.listActive();
+      for (const camera of cameras) {
+        const client = new DahuaHttpClient({
+          baseUrl: `http://${camera.ip_address}`,
+          username: env.CAMERA_USER,
+          password: env.CAMERA_PASS,
+        });
+        listenerHandles.push(startListener(camera, client));
+        logger.info({ cameraId: camera.id, ip: camera.ip_address }, "listener started");
+      }
+      if (cameras.length === 0) {
+        logger.warn("DATABASE_URL configured but no active cameras — seed the cameras table");
+      }
+      return; // sucesso, sai do loop
+    } catch (err) {
+      const isLastAttempt = attempt === maxAttempts;
+      if (isLastAttempt) {
+        logger.error(
+          { err, attempt },
+          "failed to start listeners after max retries — running without ingest. Manual restart required after fixing DB.",
+        );
+        return;
+      }
+      logger.warn({ err, attempt, maxAttempts }, "DB not ready, retrying listener startup in 5s");
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+  }
 }
+
+// Fire-and-forget: não bloqueia HTTP server startup. Logs vão indicar progresso.
+void startListenersWithRetry();
 
 // Graceful shutdown
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
