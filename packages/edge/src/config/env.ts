@@ -17,6 +17,10 @@ const envSchema = z
       .string()
       .regex(/^postgres(ql)?:\/\//, "DATABASE_URL must start with postgres:// or postgresql://")
       .optional(),
+    ERP_MYSQL_URL: z
+      .string()
+      .regex(/^mysql:\/\//, "ERP_MYSQL_URL must start with mysql://")
+      .optional(),
   })
   .refine(
     (v) =>

@@ -66,4 +66,12 @@ describe("parseEnv", () => {
   test("rejeita DATABASE_URL com schema inválido", () => {
     expect(() => parseEnv({ API_KEY: "k", DATABASE_URL: "sqlite:///vipcam.db" })).toThrow();
   });
+
+  test("aceita ERP_MYSQL_URL válido (mysql://)", () => {
+    const result = parseEnv({
+      API_KEY: "k",
+      ERP_MYSQL_URL: "mysql://erp:senha@127.0.0.1:3306/barbearia_erp",
+    });
+    expect(result.ERP_MYSQL_URL).toBe("mysql://erp:senha@127.0.0.1:3306/barbearia_erp");
+  });
 });
