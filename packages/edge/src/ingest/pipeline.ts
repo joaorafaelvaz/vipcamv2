@@ -113,6 +113,12 @@ export async function processEvent(raw: CapturedEvent, cameraId: string): Promis
     if (event.snapshot_path !== undefined) detection.snapshot_path = event.snapshot_path;
 
     await detectionsRepo.create(detection);
+    // Atualiza rollup dominant_emotion da sessão APÓS o insert da detection
+    // (subquery em sessions.recalcDominantEmotion precisa ver a nova linha).
+    // Skip se a detection nem teve emoção populada — evita query desnecessária.
+    if (detection.dominant_emotion) {
+      await sessionsRepo.recalcDominantEmotion(sessionId);
+    }
     logger.debug({ event: event.type, personId, sessionId }, "ingest persisted");
   } catch (err) {
     logger.error({ err, raw }, "ingest pipeline failed for event");

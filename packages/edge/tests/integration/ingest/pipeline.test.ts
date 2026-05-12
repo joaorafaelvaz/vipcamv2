@@ -1,8 +1,10 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import type { CapturedEvent } from "../../../src/discovery/capture.js";
 import { processEvent } from "../../../src/ingest/pipeline.js";
-import { closeDb } from "../../../src/persistence/db.js";
+import { closeDb, getDb } from "../../../src/persistence/db.js";
 import { camerasRepo, detectionsRepo } from "../../../src/persistence/repositories/index.js";
+import { sessions } from "../../../src/persistence/schema/sessions.js";
 import { truncateAll } from "../persistence/_helpers.js";
 
 let cameraId: string;
@@ -18,7 +20,7 @@ afterAll(async () => {
 });
 
 /** Cria um evento FaceDetection com payload Dahua nested (data.Object.*). */
-function rawFaceDetection(trackId: string, atSec: number): CapturedEvent {
+function rawFaceDetection(trackId: string, atSec: number, emotion = "Happy"): CapturedEvent {
   const data = {
     Class: "FaceDetection",
     Faces: [{ ObjectID: Number(trackId), Sex: "Man", Age: 30 }],
@@ -27,7 +29,7 @@ function rawFaceDetection(trackId: string, atSec: number): CapturedEvent {
       ObjectID: Number(trackId),
       Sex: "Man",
       Age: 30,
-      Emotion: "Happy",
+      Emotion: emotion,
       Express: 80,
       BoundingBox: [1000, 1500, 1500, 2000],
       Angle: [0, 0, 0],
@@ -95,5 +97,28 @@ describe("processEvent (pipeline)", () => {
     await processEvent(raw, cameraId);
     const dets = await detectionsRepo.recent(10);
     expect(dets).toHaveLength(0);
+  });
+
+  test("sessions.dominant_emotion = moda das emotions (Happy 2x, Confused 1x → Happy)", async () => {
+    // Mesma sessão (gap < 30s, mesmo track): 3 detections com emotions diferentes
+    await processEvent(rawFaceDetection("200", 0, "Happy"), cameraId);
+    await processEvent(rawFaceDetection("200", 5, "Confused"), cameraId);
+    await processEvent(rawFaceDetection("200", 10, "Happy"), cameraId);
+
+    const dets = await detectionsRepo.recent(10);
+    expect(dets).toHaveLength(3);
+
+    // Mesma session_id pra todas (gap-based reuse)
+    const sessionId = dets[0]?.session_id;
+    expect(sessionId).toBeDefined();
+    expect(dets.every((d) => d.session_id === sessionId)).toBe(true);
+
+    // recalcDominantEmotion deve ter populado: mode() = "Happy" (2 vs 1)
+    const sessionRows = await getDb()
+      .select()
+      .from(sessions)
+      .where(eq(sessions.id, sessionId as string));
+    expect(sessionRows[0]?.dominant_emotion).toBe("Happy");
+    expect(sessionRows[0]?.detection_count).toBe(3);
   });
 });
