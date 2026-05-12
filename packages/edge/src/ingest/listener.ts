@@ -1,8 +1,7 @@
-import { parseMultipartChunks } from "../discovery/capture.js";
 import { logger } from "../obs/logger.js";
 import type { Camera } from "../persistence/schema/cameras.js";
-import { parseDahuaEventLine } from "./dahua-event-parse.js";
 import type { DahuaHttpClient } from "./dahua-http-client.js";
+import { consumeStream } from "./listener-stream.js";
 import { processEvent } from "./pipeline.js";
 
 const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
@@ -67,34 +66,15 @@ async function runOnce(
   const boundaryMatch = ct.match(/boundary=([^;]+)/i);
   const boundary = boundaryMatch?.[1] ? `--${boundaryMatch[1]}` : "--myboundary";
 
-  const reader = response.body.getReader();
-  let pending: Buffer = Buffer.alloc(0);
-  let eventIdx = 0;
-
-  try {
-    while (!abortCtrl.signal.aborted) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) pending = Buffer.concat([pending, Buffer.from(value)]);
-
-      const { events, remainder } = parseMultipartChunks(pending, boundary);
-      pending = remainder;
-
-      for (const raw of events) {
-        const parsed = parseDahuaEventLine(raw);
-        const captured: Parameters<typeof processEvent>[0] = {
-          index: eventIdx++,
-          received_at: new Date().toISOString(),
-          raw,
-        };
-        if (parsed !== undefined) captured.parsed = parsed;
-        // Fire-and-forget — pipeline não pode bloquear leitura do socket
-        void processEvent(captured, camera.id);
-      }
-    }
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
+  await consumeStream({
+    reader: response.body.getReader(),
+    boundary,
+    signal: abortCtrl.signal,
+    // Fire-and-forget — pipeline não pode bloquear leitura do socket
+    onEvent: (captured) => {
+      void processEvent(captured, camera.id);
+    },
+  });
 }
 
 function sleep(ms: number): Promise<void> {
