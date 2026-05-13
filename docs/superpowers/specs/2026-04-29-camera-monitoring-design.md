@@ -7,6 +7,47 @@
 
 ---
 
+## 0. Estado pós-Onda 2 (2026-05-12)
+
+Onda 2 (Chunks 1–4) implementada e mergeada. Resumo do que está em produção
+no edge:
+
+**Ingest pipeline (Chunks 1–3):**
+- HTTP Digest + multipart/x-mixed-replace contra `eventManager.cgi attach`
+- Normalize de eventos Dahua → `Detection { face_attrs, dominant_emotion, bbox }`
+- Session-tracker (gap configurável) com rollup `dominant_emotion` via `mode()`
+- Snapshots persistidos em `/var/lib/vipcam/snapshots/` (retention pendente)
+- Cameras com partial UNIQUE em `ip_address WHERE is_active = true`
+- Boot resiliente: retry 12×5s pra DB unavailable
+
+**ERP integration (Chunk 4):**
+- mysql2 lazy pool + 3 sync jobs (employees=hourly, clients=15min, checkins=30s)
+- Cron `node-cron` com `withRunningGuard` (skip se rodada anterior em curso)
+- Match temporal puro (`computeWindow` + `decideMatch`) — janela ±N seg
+  configurável via `MATCH_WINDOW_SECONDS`
+- Orchestrator: anônimos → auto-match (1 candidata) / ambiguous (>1) / rejected (0)
+- REST: `/api/erp/sync/{employees,clients,checkins,status}` + `/api/matches/{pending,resolve,reject}`
+
+**Discovery validada (Discovery report 2026-05-11):**
+- Câmera entrega `dominant_emotion`, `age`, `gender` em `data.Object.*`
+  (NOT em `data.*` top-level — adaptação aplicada em Chunk 2)
+- P3 (upload pra Face DB câmera) **refutada** — caminho C MVP não usa
+  reconhecimento facial automático de funcionários
+
+**Pendente para Onda 3:**
+- Failover B (re-id local com InsightFace + pgvector ANN)
+- Frontend completo (lista de pessoas, perfil com Stack B + Timeline A,
+  `/matches` UI de revisão manual)
+- Auth real (X-API-Key middleware nas rotas mutativas)
+- Validação de capacidade Face DB câmera (Task 1.10 ainda não rodou em
+  campo com dataset realista)
+
+**Pendente para Onda 4:**
+- Retention job (snapshots > 30d)
+- Hardening systemd + deploy.md formal
+
+---
+
 ## 1. Objetivo
 
 Construir um sistema de monitoramento em tempo real que:
@@ -448,15 +489,15 @@ Se a câmera **não** entregar emoção nativa via API standard:
 
 ## 11. Riscos e débitos técnicos conhecidos
 
-| # | Risco/Débito | Mitigação |
-|---|---|---|
-| R1 | Câmera não entrega emoção nativa via API | Fork de design na Fase 1 (opções a/b acima) |
-| R2 | Capacidade do Face DB câmera (~10k) insuficiente para 30 unidades | Failover B (Fase 6) cobre — pgvector escala bem |
-| R3 | Janela ±5min do match temporal falha em horários de pico (várias chegadas simultâneas) | UI de revisão manual de ambíguos (`/matches`); janela configurável; iteração com dados reais |
-| R4 | Privacidade/LGPD: snapshots de anônimos indefinidos + sem opt-out | Débito explícito a revisitar antes da expansão multi-unidade; Person.delete soft já implementado prepara o terreno |
-| R5 | Match temporal pode falsificar identidade (vincular face errada a cliente) | Decisão conservadora (só auto-match com 1 candidata); auditoria via `match_attempts`; UI permite reverter |
-| R6 | Sidecar Python crash deixa Fase 6 inoperante | Sistema continua só com estratégia A; alerta + restart automático via systemd |
-| R7 | Migração futura para multi-unidade exigirá extrair edge agent | Modularidade interna do monólito facilita refactor; `ingest/` já é o "edge agent" embrionário |
+| # | Risco/Débito | Mitigação | Status |
+|---|---|---|---|
+| R1 | Câmera não entrega emoção nativa via API | Fork de design na Fase 1 (opções a/b acima) | ✅ Resolvido (Discovery 2026-05-11): `dominant_emotion` presente em `data.Object.*` |
+| R2 | Capacidade do Face DB câmera (~10k) insuficiente para 30 unidades | Failover B (Fase 6) cobre — pgvector escala bem | ⏳ A validar em campo após Task 1.10 (caminho C MVP nem usa Face DB camera, mas Onda 3/Failover B precisa medir) |
+| R3 | Janela ±5min do match temporal falha em horários de pico (várias chegadas simultâneas) | UI de revisão manual de ambíguos (`/matches`); janela configurável; iteração com dados reais | ⚙ Backend pronto (`/api/matches/*`), UI pendente Onda 3 |
+| R4 | Privacidade/LGPD: snapshots de anônimos indefinidos + sem opt-out | Débito explícito a revisitar antes da expansão multi-unidade; Person.delete soft já implementado prepara o terreno | ⏳ Pendente (retention job + opt-out são Onda 4) |
+| R5 | Match temporal pode falsificar identidade (vincular face errada a cliente) | Decisão conservadora (só auto-match com 1 candidata); auditoria via `match_attempts`; UI permite reverter | ✅ Backend implementado (Onda 2), UI reverter pendente Onda 3 |
+| R6 | Sidecar Python crash deixa Fase 6 inoperante | Sistema continua só com estratégia A; alerta + restart automático via systemd | ⏳ Pendente Onda 3 (failover B) |
+| R7 | Migração futura para multi-unidade exigirá extrair edge agent | Modularidade interna do monólito facilita refactor; `ingest/` já é o "edge agent" embrionário | ℹ Débito arquitetural — fica deferido até real necessidade multi-unidade |
 
 ## 12. Próximos passos
 
