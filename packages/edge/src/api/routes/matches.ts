@@ -1,5 +1,7 @@
 import { Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
+import { ResolveError, type ResolveErrorCode } from "../../match-temp/review.js";
 import type { MatchAttempt } from "../../persistence/schema/match-attempts.js";
 
 export interface MatchDeps {
@@ -7,6 +9,19 @@ export interface MatchDeps {
   resolve: (id: string, chosenDetectionId: string, chosenPersonId: string) => Promise<void>;
   reject: (id: string, reason?: string) => Promise<void>;
 }
+
+/**
+ * Mapeia code da ResolveError → HTTP status. Não exporta (interno do route).
+ * 5xx para condições que indicam bug ou data corruption — operador não pode
+ * resolver via UI; investigação manual no DB necessária.
+ */
+const RESOLVE_ERROR_STATUS: Record<ResolveErrorCode, ContentfulStatusCode> = {
+  not_found: 404,
+  already_resolved: 409,
+  detection_outside_window: 400,
+  person_client_mismatch: 400,
+  checkin_not_found: 500,
+};
 
 const resolveBody = z.object({
   chosen_detection_id: z.string().uuid(),
@@ -43,8 +58,18 @@ export function createMatchRoutes(deps: MatchDeps): Hono {
     if (!parsed.success) {
       return c.json({ error: "invalid_body", issues: parsed.error.issues }, 400);
     }
-    await deps.resolve(id, parsed.data.chosen_detection_id, parsed.data.chosen_person_id);
-    return c.json({ ok: true });
+    try {
+      await deps.resolve(id, parsed.data.chosen_detection_id, parsed.data.chosen_person_id);
+      return c.json({ ok: true });
+    } catch (err) {
+      // ResolveError → HTTP code tipado. Errors não-tipados caem no onError
+      // global (server.ts) que devolve 500 com {error: "internal_error"} sem
+      // vazar mensagem interna.
+      if (err instanceof ResolveError) {
+        return c.json({ error: err.code, message: err.message }, RESOLVE_ERROR_STATUS[err.code]);
+      }
+      throw err;
+    }
   });
 
   r.post("/:id/reject", async (c) => {

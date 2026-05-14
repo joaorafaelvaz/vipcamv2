@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { type MatchDeps, createMatchRoutes } from "../../../../src/api/routes/matches.js";
+import { ResolveError } from "../../../../src/match-temp/review.js";
 import type { MatchAttempt } from "../../../../src/persistence/schema/match-attempts.js";
 
 function mountWith(deps: MatchDeps): Hono {
   const app = new Hono();
   app.route("/api/matches", createMatchRoutes(deps));
+  // Mimica server.ts: onError global pra errors não-tipados → 500
+  // (sem isso, Hono leaks o stack do throw).
+  app.onError((_err, c) => c.json({ error: "internal_error" }, 500));
   return app;
 }
 
@@ -124,6 +128,101 @@ describe("POST /api/matches/:id/resolve", () => {
       }),
     });
     expect(res.status).toBe(400);
+  });
+
+  // C2: ResolveError → HTTP code mapping
+  test("ResolveError(not_found) → 404", async () => {
+    const app = mountWith(
+      deps({
+        resolve: async () => {
+          throw new ResolveError("not_found", "match_attempt does not exist");
+        },
+      }),
+    );
+    const res = await app.request(`/api/matches/${validId}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_found");
+  });
+
+  test("ResolveError(already_resolved) → 409", async () => {
+    const app = mountWith(
+      deps({
+        resolve: async () => {
+          throw new ResolveError("already_resolved", "match already auto_matched");
+        },
+      }),
+    );
+    const res = await app.request(`/api/matches/${validId}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  test("ResolveError(detection_outside_window) → 400", async () => {
+    const app = mountWith(
+      deps({
+        resolve: async () => {
+          throw new ResolveError(
+            "detection_outside_window",
+            "detection is not within match window",
+          );
+        },
+      }),
+    );
+    const res = await app.request(`/api/matches/${validId}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("detection_outside_window");
+  });
+
+  test("ResolveError(person_client_mismatch) → 400", async () => {
+    const app = mountWith(
+      deps({
+        resolve: async () => {
+          throw new ResolveError(
+            "person_client_mismatch",
+            "person.erp_client_id != checkin.erp_client_id",
+          );
+        },
+      }),
+    );
+    const res = await app.request(`/api/matches/${validId}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("Error genérico não-tipado → 500 (não vaza interno)", async () => {
+    const app = mountWith(
+      deps({
+        resolve: async () => {
+          throw new Error("ECONNREFUSED postgres");
+        },
+      }),
+    );
+    const res = await app.request(`/api/matches/${validId}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBody),
+    });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("internal_error");
+    // Mensagem específica NÃO deve vazar pro client
+    expect(JSON.stringify(body)).not.toContain("ECONNREFUSED");
   });
 });
 
