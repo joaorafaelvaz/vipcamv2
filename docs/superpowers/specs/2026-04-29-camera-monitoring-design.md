@@ -22,11 +22,21 @@ no edge:
 
 **ERP integration (Chunk 4):**
 - mysql2 lazy pool + 3 sync jobs (employees=hourly, clients=15min, checkins=30s)
-- Cron `node-cron` com `withRunningGuard` (skip se rodada anterior em curso)
+- Cron `node-cron` com `withRunningGuard` (skip se rodada anterior em curso) +
+  health tracking (HEALTHY_FAILURE_THRESHOLD=5 falhas consecutivas → degraded)
 - Match temporal puro (`computeWindow` + `decideMatch`) — janela ±N seg
   configurável via `MATCH_WINDOW_SECONDS`
-- Orchestrator: anônimos → auto-match (1 candidata) / ambiguous (>1) / rejected (0)
-- REST: `/api/erp/sync/{employees,clients,checkins,status}` + `/api/matches/{pending,resolve,reject}`
+- Orchestrator: anônimos → auto-match (1 candidata) / ambiguous (>1) / rejected (0).
+  Writes em `db.transaction` (atomic) — partial failure não duplica match_attempts.
+- REST: `/api/erp/sync/{employees,clients,checkins,status}` + `/api/matches/{pending,resolve,reject}`.
+  `resolve` valida semanticamente (detection ∈ window, person.erp_client_id == checkin.erp_client_id).
+  Auth via X-API-Key middleware aplicado em /api/erp/* /matches/* /discovery/*.
+
+**Índices críticos do schema (chunks 1-4):**
+- `cameras (ip_address) WHERE is_active = true` — partial UNIQUE (chunk 2 follow-up)
+- `match_attempts (decided_at) WHERE decision = 'ambiguous'` — partial pra UI /pending (chunk 3)
+- `erp_checkins (occurred_at) WHERE processed_at IS NULL` — partial pra orchestrator (chunk 3)
+- `detections (detected_at) WHERE person_id IS NULL` — partial pra match temporal (chunk 2)
 
 **Discovery validada (Discovery report 2026-05-11):**
 - Câmera entrega `dominant_emotion`, `age`, `gender` em `data.Object.*`
