@@ -168,6 +168,7 @@ export interface DetectionThumbnail {
   dominant_emotion: string | null;
   emotion_confidence: number | null;
   session_id: UUID | null;
+  camera_id: UUID;               // necessário pro LiveDetectionEvent + UI mostrar fonte
 }
 
 export interface SessionWithDetections {
@@ -189,6 +190,7 @@ export interface MatchPendingEnriched {
     client_name: string | null;
     client_phone: string | null;
     erp_client_id: string;
+    person_id: UUID | null;      // Person.id resolvido via JOIN persons.erp_client_id
     occurred_at: ISO8601;
     event_type: string;
   };
@@ -197,7 +199,7 @@ export interface MatchPendingEnriched {
 
 export interface LiveDetectionEvent {
   type: 'detection';
-  detection: DetectionThumbnail & { camera_id: UUID };
+  detection: DetectionThumbnail;    // já inclui camera_id
   person: PersonSummary | null;     // null se ainda anônimo
 }
 
