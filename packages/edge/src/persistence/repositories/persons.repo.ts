@@ -1,8 +1,9 @@
-import type { PaginatedResponse, PersonSummary } from "@vipcam/shared";
+import type { PaginatedResponse, PersonDetail, PersonSummary } from "@vipcam/shared";
 import { and, eq, ilike, or, sql } from "drizzle-orm";
 import { getDb } from "../db.js";
 import { erpClients } from "../schema/erp-cache.js";
 import { type NewPerson, type Person, persons } from "../schema/persons.js";
+import { sessions } from "../schema/sessions.js";
 
 export const personsRepo = {
   async create(data: Omit<NewPerson, "id">): Promise<Person> {
@@ -118,6 +119,57 @@ export const personsRepo = {
         phone: row.phone,
       })),
       total: totalRows[0]?.count ?? 0,
+    };
+  },
+
+  /**
+   * Versão enriquecida de findById que agrega first_seen_at + dominant_emotion
+   * predominante (mode) + duração média das visitas, calculados via subqueries
+   * em sessions. Onda 3 — usado pelo perfil em /people/[id].
+   *
+   * Retorna null se id não existe.
+   */
+  async findByIdWithStats(id: string): Promise<PersonDetail | null> {
+    const db = getDb();
+    const rows = await db
+      .select({
+        id: persons.id,
+        display_name: persons.display_name,
+        person_type: persons.person_type,
+        photo_path: persons.thumbnail_path,
+        last_seen_at: persons.last_seen_at,
+        total_visits: persons.total_visits,
+        erp_client_id: persons.erp_client_id,
+        erp_employee_id: persons.erp_employee_id,
+        phone: erpClients.phone,
+        first_seen_at: sql<Date | null>`(SELECT MIN(${sessions.started_at}) FROM ${sessions} WHERE ${sessions.person_id} = ${persons.id})`,
+        avg_dominant_emotion: sql<
+          string | null
+        >`(SELECT mode() WITHIN GROUP (ORDER BY ${sessions.dominant_emotion}) FROM ${sessions} WHERE ${sessions.person_id} = ${persons.id} AND ${sessions.dominant_emotion} IS NOT NULL)`,
+        avg_visit_duration_min: sql<
+          number | null
+        >`(SELECT AVG(EXTRACT(EPOCH FROM (${sessions.ended_at} - ${sessions.started_at})) / 60.0)::float FROM ${sessions} WHERE ${sessions.person_id} = ${persons.id} AND ${sessions.ended_at} IS NOT NULL)`,
+      })
+      .from(persons)
+      .leftJoin(erpClients, eq(persons.erp_client_id, erpClients.erp_id))
+      .where(eq(persons.id, id))
+      .limit(1);
+
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      id: row.id,
+      display_name: row.display_name,
+      person_type: row.person_type,
+      photo_path: row.photo_path,
+      last_seen_at: row.last_seen_at?.toISOString() ?? null,
+      total_visits: row.total_visits,
+      erp_client_id: row.erp_client_id,
+      erp_employee_id: row.erp_employee_id,
+      phone: row.phone,
+      first_seen_at: row.first_seen_at ? new Date(row.first_seen_at).toISOString() : null,
+      avg_dominant_emotion: row.avg_dominant_emotion,
+      avg_visit_duration_min: row.avg_visit_duration_min,
     };
   },
 };
