@@ -25,7 +25,8 @@ export function createSnapshotsRoutes(deps: SnapshotsDeps): Hono {
     }
     const bytes = await deps.readSnapshot(filename);
     if (!bytes) return c.json({ error: "not_found" }, 404);
-    return new Response(bytes, {
+    // Cast pra ArrayBuffer (Uint8Array tem .buffer compatible com BodyInit DOM)
+    return new Response(bytes.buffer as ArrayBuffer, {
       status: 200,
       headers: {
         "content-type": "image/jpeg",
