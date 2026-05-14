@@ -45,7 +45,27 @@ Mockups das decisões: `.superpowers/brainstorm/<session>/{nav,people-list,profi
 
 ## 3. Endpoints novos no edge
 
-Tudo prefixado por `/api/*` (já protegido por X-API-Key middleware da Onda 2). `/snapshots/*` fica fora — público.
+Onda 2 mountou `apiKeyMiddleware` por prefixo (`/api/discovery/*`, `/api/erp/*`, `/api/matches/*`). **Os novos prefixos PRECISAM ser explicitamente protegidos** (não há wildcard global hoje). Adicionar em `server.ts`:
+
+```ts
+app.use("/api/persons/*", requireKey);
+app.use("/api/sessions/*", requireKey);
+app.use("/api/dashboard/*", requireKey);
+app.use("/api/events/*", requireKey);  // ⚠ ver nota SSE abaixo
+```
+
+`/snapshots/*` fica fora — público (nginx restringe por IP da LAN).
+
+### ⚠ Auth do SSE — caso especial
+
+`EventSource` nativo do browser **não permite headers customizados** — então X-API-Key via header não funciona. 2 opções:
+
+| Opção | Decisão |
+|---|---|
+| (a) Aceitar `?api_key=` query param em `/api/events/stream` | **Escolhida.** Simples; key aparece em access log do nginx mas o kiosk LAN aceita. Logs rotacionam. |
+| (b) fetch-based SSE polyfill que suporta headers | Rejeitada. Bundle +20kb por uma feature que kiosk LAN não precisa. |
+
+`apiKeyMiddleware` precisa ser estendido pra também aceitar a key via query param **APENAS** no path `/api/events/stream` (nunca em endpoints mutativos).
 
 ### People
 
@@ -77,19 +97,27 @@ GET /api/sessions/:id/detections
 `GET /api/matches/pending` **já existe** mas devolve `MatchAttempt[]` cru. Refatorar pra devolver `MatchPendingEnriched[]` com:
 - Dados do `erp_client` correspondente ao checkin (nome, telefone)
 - Lista expandida de detections candidatas (snapshot_path + face_attrs + session_id + detected_at)
+- Campo `notes` do match_attempt original (útil pra mostrar contexto: "3 candidates" vs threshold reasons)
+
+⚠ **Breaking change:** o response shape muda. Aceitável porque Onda 2 acabou de subir e nenhum cliente externo consome esse endpoint ainda — o smoke test do operator usa `/api/matches/pending` mas via curl manual. Sem versionamento de API por ora.
 
 `POST /api/matches/:id/{resolve,reject}` **já existem** — sem mudança.
 
 ### Live feed (SSE)
 
 ```
-GET /api/events/stream
+GET /api/events/stream?api_key=<KEY>
 Content-Type: text/event-stream
 → Stream de mensagens:
   data: {"type":"detection","detection":{...},"person":{...}|null}\n\n
+
+→ Heartbeat (cada 15s):
+  : ping\n\n
 ```
 
 Implementação: novo módulo `api/events/event-bus.ts` (singleton EventEmitter) + rota SSE em `api/routes/events.ts` que subscribe ao bus. `ingest/pipeline.ts` publica no bus após appendDetection (não-bloqueante; tolerar zero subscribers).
+
+Heartbeat de 15s evita timeout de proxy (nginx default = 60s) e detecta clientes mortos quando não há detection real por muito tempo.
 
 ### Dashboard summary
 
@@ -155,6 +183,7 @@ export interface SessionWithDetections {
 export interface MatchPendingEnriched {
   match_attempt_id: UUID;
   decided_at: ISO8601;
+  notes: string | null;          // contexto do orchestrator (ex: "3 candidates")
   checkin: {
     erp_id: string;
     client_name: string | null;
@@ -236,8 +265,9 @@ packages/web/src/
 
 | Arquivo | Mudança |
 |---|---|
-| `src/api/server.ts` | Mount de novas rotas: `events`, `persons`, `sessions`, `dashboard`, `snapshots` (esse último fora de `/api/*`) |
-| `src/api/routes/events.ts` | **Novo:** SSE endpoint subscribed no event bus |
+| `src/api/server.ts` | Mount de novas rotas: `events`, `persons`, `sessions`, `dashboard`, `snapshots` (esse último fora de `/api/*`). **Adicionar `app.use("/api/persons/*", requireKey)` + similares pra `/sessions/*`, `/dashboard/*`, `/events/*`** — Onda 2 não tem wildcard global. |
+| `src/api/middleware/api-key.ts` | Estender pra aceitar `?api_key=` query param **somente** no path `/api/events/stream` (SSE limitation — EventSource não passa headers). Outros endpoints só aceitam header. |
+| `src/api/routes/events.ts` | **Novo:** SSE endpoint subscribed no event bus + heartbeat 15s |
 | `src/api/routes/persons.ts` | **Novo:** GET /persons*, GET /sessions/*/detections |
 | `src/api/routes/dashboard.ts` | **Novo:** GET /summary |
 | `src/api/routes/matches.ts` | Refatorar `GET /pending` pra retornar enriched (join com erp_clients + detections) |
@@ -253,8 +283,8 @@ packages/web/src/
 
 | Chunk | Conteúdo | Estimativa |
 |---|---|---|
-| **3.1 — REST endpoints novos** | persons*, sessions/*/detections, matches enriched, dashboard/summary, snapshots/*; tipos compartilhados; testes unit + integration | 2 dias |
-| **3.2 — SSE infrastructure** | event-bus + /events/stream + pipeline publish + use-sse hook + tests (mock EventEmitter) | 1 dia |
+| **3.1 — REST endpoints novos (read-heavy)** | persons*, sessions/*/detections, matches enriched, dashboard/summary; tipos compartilhados; testes unit + integration | 2 dias |
+| **3.2 — Snapshots + SSE infrastructure** | `/snapshots/:filename` (validação anti-traversal) + middleware extension pra `?api_key=` em /events + event-bus + /events/stream + pipeline publish + use-sse hook + tests | 1 dia |
 | **3.3 — Frontend foundation** | shadcn/ui setup + React Query provider + topbar + base layout + .env config + 1 página teste | 1 dia |
 | **3.4 — People & Profile** | /people (tabela com search/filter/pagination) + /people/[id] (stack visitas + visit cards) | 2 dias |
 | **3.5 — Matches & Live** | /matches (inbox split + detail panel + resolve/reject flow) + /live (stream + pause control) | 2 dias |
@@ -280,6 +310,7 @@ packages/web/src/
 - **Toast notifications** (shadcn `<Sonner />`) pra resolve/reject success + falhas de SSE reconnect
 - **SSE auto-reconnect:** 3s backoff exponencial até max 30s; UI mostra "● Desconectado" no topbar quando offline
 - **Empty states:** ilustração + texto pra cada tela vazia ("Nenhum match pendente — tudo resolvido!", "Aguardando primeira detecção…")
+- **Snapshot 404:** `<img onError>` substitui por placeholder genérico (avatar cinza) — snapshot pode ter sido removido por retention futuro ou corrompido
 
 ---
 
