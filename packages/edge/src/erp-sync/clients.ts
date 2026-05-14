@@ -31,7 +31,16 @@ export async function syncClients(): Promise<SyncResult> {
       if (row.phone !== undefined) newRow.phone = row.phone;
       await erpRepo.upsertClient(newRow);
       created += 1;
-    } else if (existing.name !== row.name || existing.is_active !== isActive) {
+      continue;
+    }
+
+    // I2 (review 2026-05-13): comparar TODAS as colunas mutáveis (não só
+    // name/is_active). Antes do fix, cliente trocando telefone no ERP era
+    // skipado e o cache local ficava com phone stale.
+    const phoneChanged = row.phone !== undefined && existing.phone !== row.phone;
+    const nameChanged = existing.name !== row.name;
+    const activeChanged = existing.is_active !== isActive;
+    if (nameChanged || activeChanged || phoneChanged) {
       const patch: NewErpClient = {
         ...existing,
         name: row.name,

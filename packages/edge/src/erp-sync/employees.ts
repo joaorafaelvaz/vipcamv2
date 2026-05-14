@@ -56,21 +56,36 @@ export async function syncEmployees(): Promise<SyncResult> {
         erp_employee_id: erpId,
       });
       created += 1;
-    } else if (row.name !== existing.name || isActive !== existing.is_active) {
-      // Update — preserva campos que ainda não populamos (photo_path, hash) via spread
-      const patch: NewErpEmployee = {
-        ...existing,
-        name: row.name,
-        is_active: isActive,
-      };
-      if (row.role !== undefined) patch.role = row.role;
-      await erpRepo.upsertEmployee(patch);
-
-      const person = await personsRepo.findByErpEmployeeId(erpId);
-      if (person) await personsRepo.update(person.id, { display_name: row.name });
-      updated += 1;
     } else {
-      skipped += 1;
+      // I2 (review 2026-05-13): comparar TODAS as colunas mutáveis. Antes,
+      // role/photo_url mudando no ERP eram skipados → cache stale.
+      const nameChanged = row.name !== existing.name;
+      const activeChanged = isActive !== existing.is_active;
+      const roleChanged = row.role !== undefined && existing.role !== row.role;
+      const photoChanged = row.photo_url !== undefined && existing.photo_path !== row.photo_url;
+      if (nameChanged || activeChanged || roleChanged || photoChanged) {
+        const patch: NewErpEmployee = {
+          ...existing,
+          name: row.name,
+          is_active: isActive,
+        };
+        if (row.role !== undefined) patch.role = row.role;
+        if (row.photo_url !== undefined) patch.photo_path = row.photo_url;
+        if (row.photo_updated_at !== undefined) {
+          patch.erp_updated_at = new Date(row.photo_updated_at);
+        }
+        await erpRepo.upsertEmployee(patch);
+
+        // Person.display_name segue erp_employees.name. Outras colunas de Person
+        // (display_name) só atualizam quando name muda — evita UPDATE no-op.
+        if (nameChanged) {
+          const person = await personsRepo.findByErpEmployeeId(erpId);
+          if (person) await personsRepo.update(person.id, { display_name: row.name });
+        }
+        updated += 1;
+      } else {
+        skipped += 1;
+      }
     }
   }
 
