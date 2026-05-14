@@ -1,3 +1,5 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import type { HealthCheck, HealthResponse, MatchPendingEnriched } from "@vipcam/shared";
 import { and, asc, between, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -21,13 +23,16 @@ import { detections } from "../persistence/schema/detections.js";
 import { erpCheckins, erpClients, erpEmployees } from "../persistence/schema/erp-cache.js";
 import { persons } from "../persistence/schema/persons.js";
 import { fetchDashboardSummary } from "./dashboard.queries.js";
+import { eventBus } from "./events/event-bus.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
 import { createDashboardRoutes } from "./routes/dashboard.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
 import { createErpRoutes } from "./routes/erp.js";
+import { createEventsRoutes } from "./routes/events.js";
 import { createMatchRoutes } from "./routes/matches.js";
 import { createPersonsRoutes } from "./routes/persons.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
+import { createSnapshotsRoutes } from "./routes/snapshots.js";
 
 export function createServer() {
   const app = new Hono();
@@ -36,14 +41,19 @@ export function createServer() {
 
   // I3: protege rotas mutativas/sensíveis. /api/health fica anônimo
   // (usado por nginx/uptime monitoring).
-  const requireKey = apiKeyMiddleware(env.API_KEY);
+  // Onda 3 Task 3.2.6: allowQueryOn permite ?api_key= em /api/events/stream
+  // (EventSource browser não suporta headers customizados).
+  const requireKey = apiKeyMiddleware(env.API_KEY, {
+    allowQueryOn: "/api/events/stream",
+  });
   app.use("/api/discovery/*", requireKey);
   app.use("/api/erp/*", requireKey);
   app.use("/api/matches/*", requireKey);
-  // Onda 3: protege endpoints novos do dashboard
+  // Onda 3: protege endpoints novos do dashboard + SSE
   app.use("/api/persons/*", requireKey);
   app.use("/api/sessions/*", requireKey);
   app.use("/api/dashboard/*", requireKey);
+  app.use("/api/events/*", requireKey);
 
   app.get("/api/health", async (c) => {
     const checks: Record<string, HealthCheck> = { edge: { ok: true } };
@@ -245,6 +255,32 @@ export function createServer() {
   );
 
   app.route("/api/dashboard", createDashboardRoutes({ summary: fetchDashboardSummary }));
+
+  // Onda 3 Task 3.2.6: SSE pro live feed
+  app.route(
+    "/api/events",
+    createEventsRoutes({
+      subscribe: (handler) => eventBus.subscribe(handler),
+    }),
+  );
+
+  // Onda 3 Task 3.2.6: snapshots públicos (nginx restringe LAN).
+  // Filename já é validado pela rota (regex anti-traversal); path.join é seguro.
+  const SNAPSHOTS_DIR = process.env.SNAPSHOTS_DIR ?? "/var/lib/vipcam/snapshots";
+  app.route(
+    "/snapshots",
+    createSnapshotsRoutes({
+      readSnapshot: async (filename) => {
+        const fullPath = path.join(SNAPSHOTS_DIR, filename);
+        try {
+          return await fs.readFile(fullPath);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw err;
+        }
+      },
+    }),
+  );
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
