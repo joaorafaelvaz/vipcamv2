@@ -41,6 +41,12 @@ const envSchema = z
     // ajustar com base em volume real (horários de pico podem precisar
     // janela menor pra reduzir ambiguidade).
     MATCH_WINDOW_SECONDS: z.coerce.number().int().positive().default(300),
+    // I1 (review 2026-05-13): lookback inicial pro cursor de checkins quando
+    // cache local está vazio (greenfield deploy). Default 24h captura o dia
+    // de operação típico sem inundar com histórico antigo. Aumentar se ERP
+    // tem checkins mais antigos que valem ingerir; diminuir se ERP tem muito
+    // ruído antigo.
+    ERP_CHECKINS_INITIAL_LOOKBACK_HOURS: z.coerce.number().int().positive().default(24),
   })
   .refine(
     (v) =>

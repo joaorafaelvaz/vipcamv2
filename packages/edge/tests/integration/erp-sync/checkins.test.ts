@@ -84,4 +84,66 @@ describe("pollCheckins", () => {
     const c = await erpRepo.findCheckinByErpId("50");
     expect(c?.metadata).toEqual({});
   });
+
+  // M5 (review 2026-05-13): assert explícito sobre metadata=null → {}
+  test("metadata null vira {} no DB", async () => {
+    mock.module("../../../src/erp-sync/queries.js", () => ({
+      ...queries,
+      fetchErpCheckinsSince: async () => [
+        {
+          id: 51,
+          client_id: 1,
+          event_type: "x",
+          occurred_at: new Date(),
+          metadata: null,
+        } as never,
+      ],
+    }));
+    await pollCheckins();
+    const c = await erpRepo.findCheckinByErpId("51");
+    expect(c?.metadata).toEqual({});
+  });
+
+  // I5 (review 2026-05-13): se upsertCheckin falhar, cursor NÃO avança e
+  // próxima rodada re-tenta. Sem esse fix, cursor ultrapassava o row falho
+  // e ele ficava perdido permanentemente.
+  test("upsert falhando: cursor não avança, próxima rodada re-tenta", async () => {
+    const t = new Date("2026-05-12T16:00:00Z");
+
+    // 1ª tentativa: query devolve 1 row, upsertCheckin throws
+    mock.module("../../../src/erp-sync/queries.js", () => ({
+      ...queries,
+      fetchErpCheckinsSince: async () => [
+        {
+          id: 99,
+          client_id: 1,
+          event_type: "x",
+          occurred_at: t,
+          metadata: null,
+        } as never,
+      ],
+    }));
+    const realUpsert = erpRepo.upsertCheckin.bind(erpRepo);
+    let upsertCalls = 0;
+    erpRepo.upsertCheckin = async (data) => {
+      upsertCalls += 1;
+      if (upsertCalls === 1) throw new Error("simulated transient DB failure");
+      return realUpsert(data);
+    };
+
+    try {
+      const r1 = await pollCheckins();
+      expect(r1.new_).toBe(0); // upsert falhou, nada novo
+
+      // 2ª rodada: queries.fetchErpCheckinsSince é chamado com o MESMO cursor
+      // (não avançou) → devolve o mesmo row → upsert tenta de novo (sucesso)
+      const r2 = await pollCheckins();
+      expect(r2.new_).toBe(1); // upsert agora funciona
+
+      const c = await erpRepo.findCheckinByErpId("99");
+      expect(c).not.toBeNull();
+    } finally {
+      erpRepo.upsertCheckin = realUpsert;
+    }
+  });
 });
