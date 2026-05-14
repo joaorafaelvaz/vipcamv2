@@ -42,4 +42,18 @@ export const detectionsRepo = {
   async recent(limit: number): Promise<Detection[]> {
     return getDb().select().from(detections).orderBy(desc(detections.detected_at)).limit(limit);
   },
+
+  /**
+   * Detections de uma sessão específica (Onda 3 — usado por GET /api/sessions/:id/detections
+   * pra hidratar fotos no perfil quando UI precisa mais que as 20 já embedded
+   * em sessionsRepo.listByPerson).
+   */
+  async listBySession(sessionId: string, limit = 100): Promise<Detection[]> {
+    return getDb()
+      .select()
+      .from(detections)
+      .where(eq(detections.session_id, sessionId))
+      .orderBy(desc(detections.detected_at))
+      .limit(limit);
+  },
 };

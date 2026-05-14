@@ -3,6 +3,7 @@ import { closeDb } from "../../../src/persistence/db.js";
 import { camerasRepo } from "../../../src/persistence/repositories/cameras.repo.js";
 import { detectionsRepo } from "../../../src/persistence/repositories/detections.repo.js";
 import { personsRepo } from "../../../src/persistence/repositories/persons.repo.js";
+import { sessionsRepo } from "../../../src/persistence/repositories/sessions.repo.js";
 import { truncateAll } from "./_helpers.js";
 
 beforeEach(async () => {
@@ -63,5 +64,29 @@ describe("detectionsRepo", () => {
     await detectionsRepo.linkToPerson(det.id, person.id);
     const refetched = await detectionsRepo.findById(det.id);
     expect(refetched?.person_id).toBe(person.id);
+  });
+
+  test("listBySession retorna detections ordered by detected_at desc com cap default 100", async () => {
+    const cam = await camerasRepo.create({ name: "C3", ip_address: "10.0.0.70" });
+    const sess = await sessionsRepo.create({
+      camera_id: cam.id,
+      started_at: new Date("2026-05-01T10:00:00Z"),
+      last_seen_at: new Date("2026-05-01T10:00:00Z"),
+      detection_count: 0,
+    });
+    for (let i = 0; i < 3; i++) {
+      await detectionsRepo.create({
+        camera_id: cam.id,
+        session_id: sess.id,
+        detected_at: new Date(`2026-05-01T10:0${i}:00Z`),
+        raw_event: {},
+        face_attrs: {},
+      });
+    }
+
+    const result = await detectionsRepo.listBySession(sess.id);
+    expect(result).toHaveLength(3);
+    // Newest first
+    expect(result[0]?.detected_at.toISOString()).toBe("2026-05-01T10:02:00.000Z");
   });
 });
