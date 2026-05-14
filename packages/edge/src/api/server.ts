@@ -11,14 +11,23 @@ import { resolveAmbiguous } from "../match-temp/review.js";
 import { computeWindow } from "../match-temp/window.js";
 import { logger as appLogger } from "../obs/logger.js";
 import { getDb } from "../persistence/db.js";
-import { matchAttemptsRepo } from "../persistence/repositories/index.js";
+import {
+  detectionsRepo,
+  matchAttemptsRepo,
+  personsRepo,
+  sessionsRepo,
+} from "../persistence/repositories/index.js";
 import { detections } from "../persistence/schema/detections.js";
 import { erpCheckins, erpClients, erpEmployees } from "../persistence/schema/erp-cache.js";
 import { persons } from "../persistence/schema/persons.js";
+import { fetchDashboardSummary } from "./dashboard.queries.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
+import { createDashboardRoutes } from "./routes/dashboard.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
 import { createErpRoutes } from "./routes/erp.js";
 import { createMatchRoutes } from "./routes/matches.js";
+import { createPersonsRoutes } from "./routes/persons.js";
+import { createSessionsRoutes } from "./routes/sessions.js";
 
 export function createServer() {
   const app = new Hono();
@@ -31,6 +40,10 @@ export function createServer() {
   app.use("/api/discovery/*", requireKey);
   app.use("/api/erp/*", requireKey);
   app.use("/api/matches/*", requireKey);
+  // Onda 3: protege endpoints novos do dashboard
+  app.use("/api/persons/*", requireKey);
+  app.use("/api/sessions/*", requireKey);
+  app.use("/api/dashboard/*", requireKey);
 
   app.get("/api/health", async (c) => {
     const checks: Record<string, HealthCheck> = { edge: { ok: true } };
@@ -201,6 +214,37 @@ export function createServer() {
       reject: (id, reason) => matchAttemptsRepo.rejectAmbiguous(id, reason).then(() => undefined),
     }),
   );
+
+  // Onda 3 — endpoints novos pro dashboard frontend
+  app.route(
+    "/api/persons",
+    createPersonsRoutes({
+      list: (params) => personsRepo.listWithFilters(params),
+      getById: (id) => personsRepo.findByIdWithStats(id),
+      listSessions: (id, limit) => sessionsRepo.listByPerson(id, limit),
+    }),
+  );
+
+  app.route(
+    "/api/sessions",
+    createSessionsRoutes({
+      listDetections: async (sessionId) => {
+        const dets = await detectionsRepo.listBySession(sessionId);
+        return dets.map((d) => ({
+          id: d.id,
+          detected_at: d.detected_at.toISOString(),
+          snapshot_path: d.snapshot_path,
+          face_attrs: d.face_attrs as Record<string, unknown>,
+          dominant_emotion: d.dominant_emotion,
+          emotion_confidence: d.emotion_confidence,
+          session_id: d.session_id,
+          camera_id: d.camera_id,
+        }));
+      },
+    }),
+  );
+
+  app.route("/api/dashboard", createDashboardRoutes({ summary: fetchDashboardSummary }));
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
