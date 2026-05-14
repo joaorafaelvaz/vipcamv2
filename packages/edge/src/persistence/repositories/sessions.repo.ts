@@ -1,4 +1,5 @@
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import type { SessionWithDetections } from "@vipcam/shared";
+import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db.js";
 import { detections } from "../schema/detections.js";
 import { type NewSession, type Session, sessions } from "../schema/sessions.js";
@@ -109,5 +110,69 @@ export const sessionsRepo = {
       .update(sessions)
       .set({ person_id: personId, linked_erp_checkin_id: erpCheckinId })
       .where(eq(sessions.id, sessionId));
+  },
+
+  /**
+   * Onda 3: lista sessions de uma pessoa com detections embedded (cap 20
+   * detections por session no payload). Usado pelo perfil em /people/[id]
+   * pra renderizar stack de visitas com mini-thumbnails.
+   *
+   * 2 queries (não N+1): 1 SELECT em sessions + 1 SELECT em detections com
+   * inArray(session_ids). Agrupamento em memória.
+   */
+  async listByPerson(personId: string, limit: number): Promise<SessionWithDetections[]> {
+    const db = getDb();
+    const sessRows = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.person_id, personId))
+      .orderBy(desc(sessions.started_at))
+      .limit(limit);
+
+    if (sessRows.length === 0) return [];
+
+    const sessIds = sessRows.map((s) => s.id);
+    const detRows = await db
+      .select({
+        id: detections.id,
+        detected_at: detections.detected_at,
+        snapshot_path: detections.snapshot_path,
+        face_attrs: detections.face_attrs,
+        dominant_emotion: detections.dominant_emotion,
+        emotion_confidence: detections.emotion_confidence,
+        session_id: detections.session_id,
+        camera_id: detections.camera_id,
+      })
+      .from(detections)
+      .where(inArray(detections.session_id, sessIds))
+      .orderBy(desc(detections.detected_at));
+
+    // Agrupa em memória + cap 20 por session
+    const detsBySession = new Map<string, typeof detRows>();
+    for (const d of detRows) {
+      if (!d.session_id) continue;
+      const arr = detsBySession.get(d.session_id) ?? [];
+      if (arr.length < 20) arr.push(d);
+      detsBySession.set(d.session_id, arr);
+    }
+
+    return sessRows.map((s) => ({
+      id: s.id,
+      started_at: s.started_at.toISOString(),
+      ended_at: s.ended_at?.toISOString() ?? null,
+      detection_count: s.detection_count,
+      dominant_emotion: s.dominant_emotion,
+      linked_erp_checkin_id: s.linked_erp_checkin_id,
+      detections: (detsBySession.get(s.id) ?? []).map((d) => ({
+        id: d.id,
+        detected_at: d.detected_at.toISOString(),
+        snapshot_path: d.snapshot_path,
+        face_attrs: d.face_attrs as Record<string, unknown>,
+        dominant_emotion: d.dominant_emotion,
+        emotion_confidence: d.emotion_confidence,
+        session_id: d.session_id,
+        camera_id: d.camera_id,
+      })),
+    }));
   },
 };
