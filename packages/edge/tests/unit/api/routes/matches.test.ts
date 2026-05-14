@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import type { MatchPendingEnriched } from "@vipcam/shared";
 import { Hono } from "hono";
 import { type MatchDeps, createMatchRoutes } from "../../../../src/api/routes/matches.js";
 import { ResolveError } from "../../../../src/match-temp/review.js";
-import type { MatchAttempt } from "../../../../src/persistence/schema/match-attempts.js";
 
 function mountWith(deps: MatchDeps): Hono {
   const app = new Hono();
@@ -13,20 +13,25 @@ function mountWith(deps: MatchDeps): Hono {
   return app;
 }
 
-const stubAttempt: MatchAttempt = {
-  id: "11111111-1111-1111-1111-111111111111",
-  detection_id: null,
-  erp_checkin_id: "erp-1",
-  confidence_score: null,
-  decision: "ambiguous",
-  decided_at: new Date("2026-05-12T12:00:00Z"),
-  decided_by: "system",
+const stubEnriched: MatchPendingEnriched = {
+  match_attempt_id: "11111111-1111-1111-1111-111111111111",
+  decided_at: "2026-05-12T12:00:00Z",
   notes: "3 candidates",
+  checkin: {
+    erp_id: "erp-1",
+    client_name: "Ana Costa",
+    client_phone: "11999",
+    erp_client_id: "100",
+    person_id: "99999999-9999-9999-9999-999999999999",
+    occurred_at: "2026-05-12T11:58:00Z",
+    event_type: "appointment_confirmed",
+  },
+  candidates: [],
 };
 
 function deps(overrides: Partial<MatchDeps> = {}): MatchDeps {
   return {
-    listPending: async () => [stubAttempt],
+    listPending: async () => [stubEnriched],
     resolve: async () => {},
     reject: async () => {},
     ...overrides,
@@ -40,16 +45,16 @@ describe("GET /api/matches/pending", () => {
       deps({
         listPending: async (limit) => {
           receivedLimit = limit;
-          return [stubAttempt];
+          return [stubEnriched];
         },
       }),
     );
     const res = await app.request("/api/matches/pending");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { items: MatchAttempt[] };
+    const body = (await res.json()) as { items: MatchPendingEnriched[] };
     expect(receivedLimit).toBe(50);
     expect(body.items).toHaveLength(1);
-    expect(body.items[0]?.id).toBe(stubAttempt.id);
+    expect(body.items[0]?.match_attempt_id).toBe(stubEnriched.match_attempt_id);
   });
 
   test("respeita ?limit= explícito", async () => {
