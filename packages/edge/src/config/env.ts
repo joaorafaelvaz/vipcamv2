@@ -17,6 +17,36 @@ const envSchema = z
       .string()
       .regex(/^postgres(ql)?:\/\//, "DATABASE_URL must start with postgres:// or postgresql://")
       .optional(),
+    ERP_MYSQL_URL: z
+      .string()
+      .regex(/^mysql:\/\//, "ERP_MYSQL_URL must start with mysql://")
+      .optional(),
+    // Queries SQL configuráveis pro ERP — defaults assumem schema padrão
+    // (employees/clients/checkins). Override via env se schema do ERP diverge.
+    ERP_QUERY_EMPLOYEES: z
+      .string()
+      .default(
+        "SELECT id, name, role, photo_url, photo_updated_at, is_active FROM employees WHERE is_active = 1",
+      ),
+    ERP_QUERY_CLIENTS: z
+      .string()
+      .default("SELECT id, name, phone, is_active FROM clients WHERE is_active = 1"),
+    ERP_QUERY_CHECKINS_SINCE: z
+      .string()
+      .default(
+        "SELECT id, client_id, event_type, occurred_at, metadata FROM checkins WHERE occurred_at >= ? ORDER BY occurred_at",
+      ),
+    // Match temporal: janela ±N segundos em torno do checkin do ERP usada
+    // pra encontrar detections anônimas candidatas. Default 300s (±5min) —
+    // ajustar com base em volume real (horários de pico podem precisar
+    // janela menor pra reduzir ambiguidade).
+    MATCH_WINDOW_SECONDS: z.coerce.number().int().positive().default(300),
+    // I1 (review 2026-05-13): lookback inicial pro cursor de checkins quando
+    // cache local está vazio (greenfield deploy). Default 24h captura o dia
+    // de operação típico sem inundar com histórico antigo. Aumentar se ERP
+    // tem checkins mais antigos que valem ingerir; diminuir se ERP tem muito
+    // ruído antigo.
+    ERP_CHECKINS_INITIAL_LOOKBACK_HOURS: z.coerce.number().int().positive().default(24),
   })
   .refine(
     (v) =>

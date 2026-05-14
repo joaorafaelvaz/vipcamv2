@@ -88,6 +88,11 @@ export const erpRepo = {
           erp_client_id: data.erp_client_id,
           event_type: data.event_type,
           occurred_at: data.occurred_at,
+          // M3 (review 2026-05-13): metadata ?? {} clobbra metadata existente
+          // se ERP devolver null no re-fetch. Em operação normal isso não
+          // acontece — pollCheckins SKIP rows com erp_id já cacheado (linha 41
+          // de checkins.ts), então onConflictDoUpdate só dispara via /api/erp/
+          // sync/checkins manual após cursor advance. Aceitável por enquanto.
           metadata: data.metadata ?? {},
           // processed_at NÃO é resetado por upsert — preserva estado de processamento
         },

@@ -1,5 +1,7 @@
 import { createServer } from "./api/server.js";
 import { getEnv } from "./config/env.js";
+import { validateErpQueries } from "./erp-sync/queries.js";
+import { type SchedulerHandle, startScheduler } from "./erp-sync/scheduler.js";
 import { DahuaHttpClient } from "./ingest/dahua-http-client.js";
 import { type ListenerHandle, startListener } from "./ingest/listener.js";
 import { logger } from "./obs/logger.js";
@@ -75,10 +77,34 @@ async function startListenersWithRetry(): Promise<void> {
 // Fire-and-forget: não bloqueia HTTP server startup. Logs vão indicar progresso.
 void startListenersWithRetry();
 
+// Inicia ERP sync scheduler (employee=hourly, client=15min, checkins+match=30s)
+// quando ERP_MYSQL_URL configurado. Antes valida que as queries SQL retornam
+// as colunas necessárias — falha hard se schema do ERP não bater.
+let schedulerHandle: SchedulerHandle | null = null;
+
+async function startErpScheduler(): Promise<void> {
+  if (!env.ERP_MYSQL_URL) {
+    logger.warn("ERP scheduler NOT started — ERP_MYSQL_URL missing");
+    return;
+  }
+  try {
+    await validateErpQueries();
+    schedulerHandle = startScheduler();
+  } catch (err) {
+    logger.error(
+      { err },
+      "ERP scheduler NOT started — validateErpQueries() failed. Fix queries via ERP_QUERY_* envs and restart edge.",
+    );
+  }
+}
+
+void startErpScheduler();
+
 // Graceful shutdown
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, async () => {
     logger.info({ signal }, "shutting down");
+    if (schedulerHandle) schedulerHandle.stop();
     await Promise.all(listenerHandles.map((h) => h.stop()));
     server.stop();
     process.exit(0);

@@ -17,6 +17,8 @@
     "@vipcam/shared": "workspace:*",
     "drizzle-orm": "0.45.2",
     "hono": "^4.6.3",
+    "mysql2": "3.22.3",
+    "node-cron": "4.2.1",
     "pino": "^9.4.0",
     "pino-pretty": "^11.2.2",
     "postgres": "3.4.9",
@@ -24,6 +26,7 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/node-cron": "3.0.11",
     "drizzle-kit": "0.31.10"
   }
 }
