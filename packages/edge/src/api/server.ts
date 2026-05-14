@@ -6,6 +6,7 @@ import { getLatestReport, runDiscovery } from "../discovery/runner.js";
 import { pollCheckins } from "../erp-sync/checkins.js";
 import { syncClients } from "../erp-sync/clients.js";
 import { syncEmployees } from "../erp-sync/employees.js";
+import { getJobHealth } from "../erp-sync/scheduler-health.js";
 import { resolveAmbiguous } from "../match-temp/review.js";
 import { logger as appLogger } from "../obs/logger.js";
 import { getDb } from "../persistence/db.js";
@@ -42,6 +43,16 @@ export function createServer() {
           error: err instanceof Error ? err.message : String(err),
         };
       }
+    }
+
+    // I4 (review 2026-05-13): expõe estado de cada job do scheduler. Após
+    // N failures consecutivas, o check fica ok=false e degrada o overall
+    // status pra que monitoring/uptime alerte (ex: schema do ERP mudou em
+    // runtime e queries começam a throw a cada 30s).
+    for (const job of getJobHealth()) {
+      const check: HealthCheck = { ok: job.healthy };
+      if (!job.healthy && job.last_error) check.error = job.last_error;
+      checks[`scheduler_${job.name}`] = check;
     }
 
     const allOk = Object.values(checks).every((ck) => ck.ok);
