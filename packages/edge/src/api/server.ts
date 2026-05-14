@@ -11,6 +11,7 @@ import { logger as appLogger } from "../obs/logger.js";
 import { getDb } from "../persistence/db.js";
 import { matchAttemptsRepo } from "../persistence/repositories/index.js";
 import { erpCheckins, erpClients, erpEmployees } from "../persistence/schema/erp-cache.js";
+import { apiKeyMiddleware } from "./middleware/api-key.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
 import { createErpRoutes } from "./routes/erp.js";
 import { createMatchRoutes } from "./routes/matches.js";
@@ -19,6 +20,13 @@ export function createServer() {
   const app = new Hono();
   const startedAt = Date.now();
   const env = getEnv();
+
+  // I3: protege rotas mutativas/sensíveis. /api/health fica anônimo
+  // (usado por nginx/uptime monitoring).
+  const requireKey = apiKeyMiddleware(env.API_KEY);
+  app.use("/api/discovery/*", requireKey);
+  app.use("/api/erp/*", requireKey);
+  app.use("/api/matches/*", requireKey);
 
   app.get("/api/health", async (c) => {
     const checks: Record<string, HealthCheck> = { edge: { ok: true } };
