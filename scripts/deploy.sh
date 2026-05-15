@@ -40,6 +40,19 @@ fi
 
 cd "$APP_DIR"
 
+# ----- 0. Normaliza ownership (root-cause fix, 2026-05-15) -----
+# As ops git abaixo rodam como $SERVICE_USER. `git reset --hard` precisa
+# unlink arquivos modificados, e unlink exige WRITE no diretório PAI (não
+# no arquivo). Se qualquer dir do working tree estiver root-owned — ex:
+# alguém rodou `git pull` como root, ou um commit anterior introduziu um
+# diretório novo via op git root — o `git reset --hard` como $SERVICE_USER
+# falha com "unable to unlink ... Permission denied" e, com set -e, ABORTA
+# o deploy (ou pior: silenciosamente deixa arquivo de auth stale).
+# chown -R idempotente RESTAURA a invariante "working tree pertence ao
+# service user" em todo deploy, independente de como o drift aconteceu.
+log "normalizando ownership de $APP_DIR para $SERVICE_USER"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
+
 # ----- 1. Snapshot da revisão atual (para rollback) -----
 PREV_SHA="$(git rev-parse HEAD)"
 log "snapshot pré-deploy: $PREV_SHA"
@@ -75,14 +88,17 @@ if [[ -d "$MIG_DIR" ]] && compgen -G "$MIG_DIR/*.sql" > /dev/null; then
   if ! sudo -u "$SERVICE_USER" test -r "$EDGE_ENV"; then
     fail "migrations precisam de DATABASE_URL mas $EDGE_ENV não é legível pelo user $SERVICE_USER"
   fi
-  log "rodando db:migrate (carregando env de $EDGE_ENV)"
-  sudo -u "$SERVICE_USER" bash -c "
-    cd packages/edge
-    set -a
-    source $EDGE_ENV
-    set +a
-    bun run db:migrate
-  "
+  # NÃO usar `source $EDGE_ENV`: o arquivo contém ERP_QUERY_* com SQL que
+  # tem `(`, `'`, `?` — bash interpreta como sintaxe e quebra
+  # ("syntax error near unexpected token `('"). db:migrate só precisa de
+  # DATABASE_URL; extraímos só ela e passamos via `env` (literal, sem
+  # avaliação de shell — robusto a senha com caracteres especiais).
+  log "rodando db:migrate (DATABASE_URL extraída de $EDGE_ENV)"
+  DB_URL="$(grep -E '^DATABASE_URL=' "$EDGE_ENV" | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+  if [[ -z "$DB_URL" ]]; then
+    fail "DATABASE_URL não encontrada em $EDGE_ENV"
+  fi
+  sudo -u "$SERVICE_USER" env DATABASE_URL="$DB_URL" bash -c "cd packages/edge && bun run db:migrate"
 else
   log "sem migrações para aplicar (Onda 2 ainda não landed)"
 fi
