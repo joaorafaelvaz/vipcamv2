@@ -1,29 +1,72 @@
 import type { DiscoveryReport } from "@vipcam/shared";
+import { getClientEnv } from "./env";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-
-/** Lança um Error consistente a partir de uma resposta não-OK. */
-async function throwApiError(r: Response, fallback: string): Promise<never> {
-  const body = (await r.json().catch(() => ({}))) as { error?: string };
-  const detail = body.error ?? fallback;
-  throw new Error(`${r.status} ${detail}`);
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message?: string,
+  ) {
+    super(message ?? `${status} ${code}`);
+    this.name = "ApiError";
+  }
 }
 
+interface ApiOptions {
+  method?: "GET" | "POST" | "PUT" | "DELETE";
+  body?: unknown;
+  signal?: AbortSignal;
+}
+
+export async function apiFetch<T>(path: string, opts: ApiOptions = {}): Promise<T> {
+  const env = getClientEnv();
+  const url = `${env.NEXT_PUBLIC_API_URL}${path}`;
+  const headers: Record<string, string> = {
+    "X-API-Key": env.NEXT_PUBLIC_API_KEY,
+  };
+  let body: BodyInit | undefined;
+  if (opts.body !== undefined) {
+    headers["content-type"] = "application/json";
+    body = JSON.stringify(opts.body);
+  }
+  const init: RequestInit = { method: opts.method ?? "GET", headers };
+  if (body !== undefined) init.body = body;
+  if (opts.signal !== undefined) init.signal = opts.signal;
+  const res = await fetch(url, init);
+
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new ApiError(res.status, errBody.error ?? "unknown_error");
+  }
+  if (res.status === 204) return undefined as unknown as T;
+  return (await res.json()) as T;
+}
+
+/** Constrói URL absoluta pra snapshot a partir do snapshot_path do edge. */
+export function snapshotUrl(snapshotPath: string | null): string | null {
+  if (!snapshotPath) return null;
+  const filename = snapshotPath.split("/").pop();
+  if (!filename) return null;
+  const env = getClientEnv();
+  return `${env.NEXT_PUBLIC_API_URL}/snapshots/${filename}`;
+}
+
+// ---- Discovery helpers (Onda 1, re-implementados via apiFetch) ----
+
 export async function getLastDiscoveryReport(): Promise<DiscoveryReport | null> {
-  const r = await fetch(`${API_URL}/api/discovery/last-report`, { cache: "no-store" });
-  if (r.status === 404) return null;
-  if (!r.ok) await throwApiError(r, "failed_to_fetch_last_report");
-  const body = (await r.json()) as { report: DiscoveryReport };
-  return body.report;
+  try {
+    const r = await apiFetch<{ report: DiscoveryReport }>("/api/discovery/last-report");
+    return r.report;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
 }
 
 export async function runDiscovery(captureSeconds?: number): Promise<DiscoveryReport> {
-  const r = await fetch(`${API_URL}/api/discovery/probe`, {
+  const r = await apiFetch<{ report: DiscoveryReport }>("/api/discovery/probe", {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ capture_seconds: captureSeconds }),
+    body: captureSeconds !== undefined ? { capture_seconds: captureSeconds } : {},
   });
-  if (!r.ok) await throwApiError(r, "discovery_failed");
-  const body = (await r.json()) as { report: DiscoveryReport };
-  return body.report;
+  return r.report;
 }
