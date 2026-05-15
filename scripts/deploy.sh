@@ -104,9 +104,25 @@ else
 fi
 
 # ----- 6. Build do web -----
+# Next inlina NEXT_PUBLIC_* em BUILD time. Sem essas vars o frontend
+# sobe com env undefined (getClientEnv() lança). Extraímos de
+# /etc/vipcam/web.env (mesmo padrão do db:migrate: grep+env, NÃO source —
+# robusto a chars especiais e não vaza outras vars pro processo de build).
+WEB_ENV="/etc/vipcam/web.env"
 if [[ -f packages/web/package.json ]]; then
-  log "next build"
-  sudo -u "$SERVICE_USER" bash -c "cd packages/web && bun run build"
+  if [[ ! -f "$WEB_ENV" ]]; then
+    fail "$WEB_ENV não existe — frontend precisa de NEXT_PUBLIC_API_URL/KEY. Crie a partir de infra/env-templates/web.env.example"
+  fi
+  WEB_API_URL="$(grep -E '^NEXT_PUBLIC_API_URL=' "$WEB_ENV" | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+  WEB_API_KEY="$(grep -E '^NEXT_PUBLIC_API_KEY=' "$WEB_ENV" | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+  if [[ -z "$WEB_API_URL" || -z "$WEB_API_KEY" ]]; then
+    fail "NEXT_PUBLIC_API_URL ou NEXT_PUBLIC_API_KEY ausente/vazio em $WEB_ENV"
+  fi
+  log "next build (NEXT_PUBLIC_* de $WEB_ENV)"
+  sudo -u "$SERVICE_USER" env \
+    NEXT_PUBLIC_API_URL="$WEB_API_URL" \
+    NEXT_PUBLIC_API_KEY="$WEB_API_KEY" \
+    bash -c "cd packages/web && bun run build"
 fi
 
 # ----- 7. Restart dos serviços -----
@@ -148,7 +164,12 @@ if [[ -z "${EDGE_OK:-}" || -z "${WEB_OK:-}" ]]; then
   sudo -u "$SERVICE_USER" git reset --hard "$PREV_SHA"
   sudo -u "$SERVICE_USER" bun install --frozen-lockfile
   if [[ -f packages/web/package.json ]]; then
-    sudo -u "$SERVICE_USER" bash -c "cd packages/web && bun run build"
+    # Rollback também precisa dos NEXT_PUBLIC_* (reusa as vars já extraídas
+    # na seção 6; se o fail ocorreu antes delas, re-extrai defensivamente).
+    sudo -u "$SERVICE_USER" env \
+      NEXT_PUBLIC_API_URL="${WEB_API_URL:-$(grep -E '^NEXT_PUBLIC_API_URL=' "${WEB_ENV:-/etc/vipcam/web.env}" | head -1 | cut -d= -f2- | tr -d "\"'")}" \
+      NEXT_PUBLIC_API_KEY="${WEB_API_KEY:-$(grep -E '^NEXT_PUBLIC_API_KEY=' "${WEB_ENV:-/etc/vipcam/web.env}" | head -1 | cut -d= -f2- | tr -d "\"'")}" \
+      bash -c "cd packages/web && bun run build"
   fi
   systemctl restart vipcam-edge.service vipcam-web.service
   fail "rollback completo. Investigue: journalctl -u vipcam-edge -u vipcam-web -n 100"
