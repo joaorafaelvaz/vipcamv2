@@ -53,3 +53,36 @@ describe("apiKeyMiddleware", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("apiKeyMiddleware — query param exception (SSE only)", () => {
+  const key = "valid-secret-123";
+
+  function appAllowingQueryOn(pathSuffix: string): Hono {
+    const app = new Hono();
+    app.use("/api/*", apiKeyMiddleware(key, { allowQueryOn: pathSuffix }));
+    app.get("/api/events/stream", (c) => c.text("ok"));
+    app.post("/api/erp/sync/employees", (c) => c.text("danger"));
+    return app;
+  }
+
+  test("aceita ?api_key= em /api/events/stream", async () => {
+    const app = appAllowingQueryOn("/api/events/stream");
+    const res = await app.request(`/api/events/stream?api_key=${key}`);
+    expect(res.status).toBe(200);
+  });
+
+  test("REJEITA ?api_key= em endpoint mutativo (mesma config)", async () => {
+    const app = appAllowingQueryOn("/api/events/stream");
+    const res = await app.request(`/api/erp/sync/employees?api_key=${key}`, { method: "POST" });
+    expect(res.status).toBe(401);
+  });
+
+  test("ainda aceita header X-API-Key normal em qualquer rota", async () => {
+    const app = appAllowingQueryOn("/api/events/stream");
+    const res = await app.request("/api/erp/sync/employees", {
+      method: "POST",
+      headers: { "X-API-Key": key },
+    });
+    expect(res.status).toBe(200);
+  });
+});

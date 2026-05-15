@@ -1,11 +1,11 @@
+import type { MatchPendingEnriched } from "@vipcam/shared";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import { ResolveError, type ResolveErrorCode } from "../../match-temp/review.js";
-import type { MatchAttempt } from "../../persistence/schema/match-attempts.js";
 
 export interface MatchDeps {
-  listPending: (limit: number) => Promise<MatchAttempt[]>;
+  listPending: (limit: number) => Promise<MatchPendingEnriched[]>;
   resolve: (id: string, chosenDetectionId: string, chosenPersonId: string) => Promise<void>;
   reject: (id: string, reason?: string) => Promise<void>;
 }

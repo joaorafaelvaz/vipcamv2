@@ -1,4 +1,5 @@
-import type { CanonicalEvent } from "@vipcam/shared";
+import type { CanonicalEvent, LiveDetectionEvent } from "@vipcam/shared";
+import { eventBus } from "../api/events/event-bus.js";
 import type { CapturedEvent } from "../discovery/capture.js";
 import { logger } from "../obs/logger.js";
 import { detectionsRepo, sessionsRepo } from "../persistence/repositories/index.js";
@@ -112,13 +113,37 @@ export async function processEvent(raw: CapturedEvent, cameraId: string): Promis
     }
     if (event.snapshot_path !== undefined) detection.snapshot_path = event.snapshot_path;
 
-    await detectionsRepo.create(detection);
+    const created = await detectionsRepo.create(detection);
     // Atualiza rollup dominant_emotion da sessão APÓS o insert da detection
     // (subquery em sessions.recalcDominantEmotion precisa ver a nova linha).
     // Skip se a detection nem teve emoção populada — evita query desnecessária.
     if (detection.dominant_emotion) {
       await sessionsRepo.recalcDominantEmotion(sessionId);
     }
+
+    // Onda 3 Task 3.2.5: publica detection no event bus pro live feed (SSE).
+    // Não-bloqueante: try/catch isolado evita que falha de subscriber derrube
+    // o pipeline. person identification em Onda 4 (failover B InsightFace).
+    try {
+      const liveEvent: LiveDetectionEvent = {
+        type: "detection",
+        detection: {
+          id: created.id,
+          detected_at: created.detected_at.toISOString(),
+          snapshot_path: created.snapshot_path,
+          face_attrs: created.face_attrs as Record<string, unknown>,
+          dominant_emotion: created.dominant_emotion,
+          emotion_confidence: created.emotion_confidence,
+          session_id: created.session_id,
+          camera_id: created.camera_id,
+        },
+        person: null,
+      };
+      eventBus.publish(liveEvent);
+    } catch (err) {
+      logger.warn({ err }, "event bus publish failed — ingest continues");
+    }
+
     logger.debug({ event: event.type, personId, sessionId }, "ingest persisted");
   } catch (err) {
     logger.error({ err, raw }, "ingest pipeline failed for event");
