@@ -164,11 +164,21 @@ if [[ -z "${EDGE_OK:-}" || -z "${WEB_OK:-}" ]]; then
   sudo -u "$SERVICE_USER" git reset --hard "$PREV_SHA"
   sudo -u "$SERVICE_USER" bun install --frozen-lockfile
   if [[ -f packages/web/package.json ]]; then
-    # Rollback também precisa dos NEXT_PUBLIC_* (reusa as vars já extraídas
-    # na seção 6; se o fail ocorreu antes delas, re-extrai defensivamente).
+    # Rollback também precisa dos NEXT_PUBLIC_*. Em fluxo normal a seção 6
+    # já populou WEB_API_URL/KEY; se o fail ocorreu antes (raro), re-extrai.
+    # M3 (review 2026-05-15): usa o MESMO strip ancorado da seção 6 (sed
+    # remove só aspas circundantes) — não `tr -d` global, que corromperia
+    # um valor com aspas embutidas.
+    : "${WEB_ENV:=/etc/vipcam/web.env}"
+    if [[ -z "${WEB_API_URL:-}" ]]; then
+      WEB_API_URL="$(grep -E '^NEXT_PUBLIC_API_URL=' "$WEB_ENV" | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+    fi
+    if [[ -z "${WEB_API_KEY:-}" ]]; then
+      WEB_API_KEY="$(grep -E '^NEXT_PUBLIC_API_KEY=' "$WEB_ENV" | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
+    fi
     sudo -u "$SERVICE_USER" env \
-      NEXT_PUBLIC_API_URL="${WEB_API_URL:-$(grep -E '^NEXT_PUBLIC_API_URL=' "${WEB_ENV:-/etc/vipcam/web.env}" | head -1 | cut -d= -f2- | tr -d "\"'")}" \
-      NEXT_PUBLIC_API_KEY="${WEB_API_KEY:-$(grep -E '^NEXT_PUBLIC_API_KEY=' "${WEB_ENV:-/etc/vipcam/web.env}" | head -1 | cut -d= -f2- | tr -d "\"'")}" \
+      NEXT_PUBLIC_API_URL="$WEB_API_URL" \
+      NEXT_PUBLIC_API_KEY="$WEB_API_KEY" \
       bash -c "cd packages/web && bun run build"
   fi
   systemctl restart vipcam-edge.service vipcam-web.service

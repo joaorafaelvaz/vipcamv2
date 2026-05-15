@@ -25,8 +25,16 @@ export function createSnapshotsRoutes(deps: SnapshotsDeps): Hono {
     }
     const bytes = await deps.readSnapshot(filename);
     if (!bytes) return c.json({ error: "not_found" }, 404);
-    // Cast pra ArrayBuffer (Uint8Array tem .buffer compatible com BodyInit DOM)
-    return new Response(bytes.buffer as ArrayBuffer, {
+    // C1: bytes pode ser uma VIEW num buffer maior (fs.readFile retorna
+    // Buffer do pool interno do Node pra files <8KB). `.buffer` seria o
+    // pool inteiro → bytes errados + leak de memória adjacente num
+    // endpoint sem auth. slice do range exato copia só este arquivo e
+    // produz um ArrayBuffer próprio (BodyInit válido).
+    const body = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer;
+    return new Response(body, {
       status: 200,
       headers: {
         "content-type": "image/jpeg",

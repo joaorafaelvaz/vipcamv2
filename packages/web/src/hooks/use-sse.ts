@@ -29,6 +29,11 @@ export function useSse<T>({
   const [state, setState] = useState<ConnState>("connecting");
   const onMsgRef = useRef(onMessage);
   onMsgRef.current = onMessage;
+  // I1 (review 2026-05-15): onError fora das deps do effect. Se um consumer
+  // passar onError inline (não-memoizado), tê-lo nas deps recriaria o
+  // EventSource a cada render (reconnect storm). Ref evita isso.
+  const onErrRef = useRef(onError);
+  onErrRef.current = onError;
 
   useEffect(() => {
     let backoff = initialBackoffMs;
@@ -56,7 +61,7 @@ export function useSse<T>({
       es.onerror = (err: Event) => {
         if (cancelled) return;
         setState("error");
-        onError?.(err);
+        onErrRef.current?.(err);
         es?.close();
         reconnectTimer = setTimeout(connect, backoff);
         backoff = Math.min(backoff * 2, maxBackoffMs);
@@ -71,7 +76,7 @@ export function useSse<T>({
       es?.close();
       setState("closed");
     };
-  }, [url, initialBackoffMs, maxBackoffMs, onError]);
+  }, [url, initialBackoffMs, maxBackoffMs]);
 
   return { state };
 }

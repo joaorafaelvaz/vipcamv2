@@ -55,7 +55,10 @@ export function LiveFeed() {
           </div>
         ) : (
           events.map((e, i) => (
-            <DetectionCard key={`${e.detection.id}-${i}`} event={e} fresh={i === 0} />
+            // M2: key = detection.id (UUID único por detection). Antes usava
+            // index — no ring buffer (prepend) os índices deslocam a cada
+            // evento, forçando re-render completo da lista a cada tick.
+            <DetectionCard key={e.detection.id} event={e} fresh={i === 0} />
           ))
         )}
       </div>
