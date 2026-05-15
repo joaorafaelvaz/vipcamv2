@@ -6,6 +6,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { VisitCard } from "@/components/visit-card";
 import { usePerson, usePersonSessions } from "@/lib/queries/persons";
 
+// Client-rendered + env runtime — sem prerender estático (ver /live).
+export const dynamic = "force-dynamic";
+
 // Next 14 + React 18: params é objeto direto (não Promise).
 export default function PersonProfilePage({ params }: { params: { id: string } }) {
   const { id } = params;

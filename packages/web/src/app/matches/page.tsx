@@ -6,6 +6,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useMatchesPending } from "@/lib/queries/matches";
 import { useState } from "react";
 
+// Client-rendered + env runtime — sem prerender estático (ver /live).
+export const dynamic = "force-dynamic";
+
 export default function MatchesPage() {
   const { data: matches, isLoading } = useMatchesPending();
   const [selectedId, setSelectedId] = useState<string | null>(null);
