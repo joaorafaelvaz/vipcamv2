@@ -20,8 +20,8 @@ import {
 } from "../persistence/repositories/index.js";
 import { erpCheckins, erpClients, erpEmployees } from "../persistence/schema/erp-cache.js";
 import { fetchDashboardSummary } from "./dashboard.queries.js";
-import { listPendingEnriched } from "./match-pending.js";
 import { eventBus } from "./events/event-bus.js";
+import { listPendingEnriched } from "./match-pending.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
 import { createDashboardRoutes } from "./routes/dashboard.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";

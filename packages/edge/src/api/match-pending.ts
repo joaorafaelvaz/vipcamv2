@@ -23,9 +23,7 @@ export async function listPendingEnriched(limit: number): Promise<MatchPendingEn
   const attempts = await matchAttemptsRepo.findPending(limit);
   if (attempts.length === 0) return [];
 
-  const checkinIds = attempts
-    .map((a) => a.erp_checkin_id)
-    .filter((x): x is string => x !== null);
+  const checkinIds = attempts.map((a) => a.erp_checkin_id).filter((x): x is string => x !== null);
   const checkinRows =
     checkinIds.length > 0
       ? await db
@@ -60,12 +58,9 @@ export async function listPendingEnriched(limit: number): Promise<MatchPendingEn
   }
   if (resolved.length === 0) return [];
 
-  let unionStart = resolved[0]!.window.start;
-  let unionEnd = resolved[0]!.window.end;
-  for (const r of resolved) {
-    if (r.window.start < unionStart) unionStart = r.window.start;
-    if (r.window.end > unionEnd) unionEnd = r.window.end;
-  }
+  // Range-união de todas as janelas (resolved é não-vazio — guard acima).
+  const unionStart = new Date(Math.min(...resolved.map((r) => r.window.start.getTime())));
+  const unionEnd = new Date(Math.max(...resolved.map((r) => r.window.end.getTime())));
 
   const allDet = await db
     .select({
@@ -79,12 +74,7 @@ export async function listPendingEnriched(limit: number): Promise<MatchPendingEn
       camera_id: detections.camera_id,
     })
     .from(detections)
-    .where(
-      and(
-        isNull(detections.person_id),
-        between(detections.detected_at, unionStart, unionEnd),
-      ),
-    )
+    .where(and(isNull(detections.person_id), between(detections.detected_at, unionStart, unionEnd)))
     .orderBy(asc(detections.detected_at));
 
   return resolved.map(({ attempt: a, checkin, window }) => {
