@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { HealthCheck, HealthResponse, MatchPendingEnriched } from "@vipcam/shared";
-import { and, asc, between, eq, inArray, isNull, sql } from "drizzle-orm";
+import type { HealthCheck, HealthResponse } from "@vipcam/shared";
+import { sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { getEnv } from "../config/env.js";
 import { getLatestReport, runDiscovery } from "../discovery/runner.js";
@@ -10,7 +10,6 @@ import { syncClients } from "../erp-sync/clients.js";
 import { syncEmployees } from "../erp-sync/employees.js";
 import { getJobHealth } from "../erp-sync/scheduler-health.js";
 import { resolveAmbiguous } from "../match-temp/review.js";
-import { computeWindow } from "../match-temp/window.js";
 import { logger as appLogger } from "../obs/logger.js";
 import { getDb } from "../persistence/db.js";
 import {
@@ -19,11 +18,10 @@ import {
   personsRepo,
   sessionsRepo,
 } from "../persistence/repositories/index.js";
-import { detections } from "../persistence/schema/detections.js";
 import { erpCheckins, erpClients, erpEmployees } from "../persistence/schema/erp-cache.js";
-import { persons } from "../persistence/schema/persons.js";
 import { fetchDashboardSummary } from "./dashboard.queries.js";
 import { eventBus } from "./events/event-bus.js";
+import { listPendingEnriched } from "./match-pending.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
 import { createDashboardRoutes } from "./routes/dashboard.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
@@ -140,86 +138,7 @@ export function createServer() {
   app.route(
     "/api/matches",
     createMatchRoutes({
-      listPending: async (limit) => {
-        const db = getDb();
-        const attempts = await matchAttemptsRepo.findPending(limit);
-        if (attempts.length === 0) return [];
-
-        const checkinIds = attempts
-          .map((a) => a.erp_checkin_id)
-          .filter((x): x is string => x !== null);
-        const checkinRows =
-          checkinIds.length > 0
-            ? await db
-                .select({
-                  erp_id: erpCheckins.erp_id,
-                  erp_client_id: erpCheckins.erp_client_id,
-                  occurred_at: erpCheckins.occurred_at,
-                  event_type: erpCheckins.event_type,
-                  client_name: erpClients.name,
-                  client_phone: erpClients.phone,
-                  person_id: persons.id,
-                })
-                .from(erpCheckins)
-                .leftJoin(erpClients, eq(erpCheckins.erp_client_id, erpClients.erp_id))
-                .leftJoin(persons, eq(persons.erp_client_id, erpCheckins.erp_client_id))
-                .where(inArray(erpCheckins.erp_id, checkinIds))
-            : [];
-        const checkinsById = new Map(checkinRows.map((c) => [c.erp_id, c]));
-
-        const enriched: MatchPendingEnriched[] = [];
-        for (const a of attempts) {
-          if (!a.erp_checkin_id) continue;
-          const checkin = checkinsById.get(a.erp_checkin_id);
-          if (!checkin) continue;
-          const window = computeWindow(checkin.occurred_at, env.MATCH_WINDOW_SECONDS);
-          const candidatesDet = await db
-            .select({
-              id: detections.id,
-              detected_at: detections.detected_at,
-              snapshot_path: detections.snapshot_path,
-              face_attrs: detections.face_attrs,
-              dominant_emotion: detections.dominant_emotion,
-              emotion_confidence: detections.emotion_confidence,
-              session_id: detections.session_id,
-              camera_id: detections.camera_id,
-            })
-            .from(detections)
-            .where(
-              and(
-                isNull(detections.person_id),
-                between(detections.detected_at, window.start, window.end),
-              ),
-            )
-            .orderBy(asc(detections.detected_at));
-
-          enriched.push({
-            match_attempt_id: a.id,
-            decided_at: a.decided_at.toISOString(),
-            notes: a.notes,
-            checkin: {
-              erp_id: checkin.erp_id,
-              client_name: checkin.client_name,
-              client_phone: checkin.client_phone,
-              erp_client_id: checkin.erp_client_id,
-              person_id: checkin.person_id,
-              occurred_at: checkin.occurred_at.toISOString(),
-              event_type: checkin.event_type,
-            },
-            candidates: candidatesDet.map((d) => ({
-              id: d.id,
-              detected_at: d.detected_at.toISOString(),
-              snapshot_path: d.snapshot_path,
-              face_attrs: d.face_attrs as Record<string, unknown>,
-              dominant_emotion: d.dominant_emotion,
-              emotion_confidence: d.emotion_confidence,
-              session_id: d.session_id,
-              camera_id: d.camera_id,
-            })),
-          });
-        }
-        return enriched;
-      },
+      listPending: (limit) => listPendingEnriched(limit),
       resolve: resolveAmbiguous,
       reject: (id, reason) => matchAttemptsRepo.rejectAmbiguous(id, reason).then(() => undefined),
     }),

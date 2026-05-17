@@ -14,6 +14,7 @@ EnvironmentFile=/etc/vipcam/web.env
 Environment=PORT=3035
 Environment=NODE_ENV=production
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/vipcam
 ExecStart=/usr/local/bin/bun run start
 Restart=on-failure
 RestartSec=5s
@@ -30,7 +31,7 @@ ProtectSystem=strict
 ProtectHome=read-only
 # Next.js precisa escrever em .next/, e Bun em ~/.bun/install/cache,
 # node_modules/.cache. Damos write em /opt/vipcamv2 inteiro (escopo dedicado).
-ReadWritePaths=/var/log/vipcam /opt/vipcamv2 /tmp
+ReadWritePaths=/var/log/vipcam /opt/vipcamv2 /var/lib/vipcam /tmp
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]

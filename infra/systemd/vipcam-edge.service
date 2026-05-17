@@ -14,6 +14,7 @@ WorkingDirectory=/opt/vipcamv2/packages/edge
 EnvironmentFile=/etc/vipcam/edge.env
 # bun deve estar em /usr/local/bin/bun (symlink criado pelo install.sh)
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/vipcam
 ExecStart=/usr/local/bin/bun src/main.ts
 Restart=on-failure
 RestartSec=5s
@@ -33,7 +34,7 @@ ProtectHome=read-only
 # Bun precisa escrever em ~/.bun/install/cache, node_modules/.cache,
 # e o WorkingDirectory pode receber arquivos. Damos write em /opt/vipcamv2
 # inteiro (já é um diretório dedicado da app, isolamento mantido).
-ReadWritePaths=/var/log/vipcam /opt/vipcamv2 /tmp
+ReadWritePaths=/var/log/vipcam /opt/vipcamv2 /var/lib/vipcam /tmp
 # Permite só localhost + rede da câmera/ERP — ajustar se câmera está em VLAN diferente
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
