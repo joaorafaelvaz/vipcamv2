@@ -7,6 +7,30 @@
 
 ---
 
+## 0. Estado operacional pós-Onda 3
+
+Onda 3 fechou e está em produção (backend + telas validados; `/live` SSE
+degradado por config de nginx — ver abaixo). Esta seção registra os débitos
+formalmente diferidos, resolvidos/registrados na **Onda 4 — Débitos &
+Hardening** (`docs/superpowers/specs/2026-05-15-onda-4-debitos-hardening-design.md`).
+
+### Débitos diferidos (resolvidos / registrados na Onda 4)
+
+- **nginx SSE 502** — corrigido em código no commit `2e3b7d0`
+  (`location = /api/events/stream`, `Connection ""`, buffering/cache off,
+  read_timeout 3600s). **Aplicação operacional pendente** (passo manual de
+  nginx, fora do deploy.sh): `git pull` no VPS + `cp` do vhost +
+  `nginx -t && systemctl reload nginx`. Aplicar quando houver acesso ao
+  servidor.
+- **Failover B (re-id local InsightFace + pgvector)** — onda futura, com
+  **gate obrigatório**: probe na câmera DH-IPC-HFW5442T-ASE para determinar
+  a fonte da imagem de rosto antes de desenhar. M4 (`snapshotUrl` flat
+  filename) anexado a essa onda. Detalhes em
+  `docs/superpowers/specs/2026-05-15-onda-4-debitos-hardening-design.md`
+  Seção 3.
+
+---
+
 ## 1. Objetivo
 
 Construir o frontend Next.js que dê **visibilidade operacional** do que a câmera + ERP + match temporal estão produzindo, e permita **resolução manual de matches ambíguos**. Sem isso, o sistema funciona "às cegas" — dados acumulam mas ninguém consegue agir sobre eles.
