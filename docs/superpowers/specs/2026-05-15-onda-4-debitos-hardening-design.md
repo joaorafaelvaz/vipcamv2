@@ -32,27 +32,57 @@ Mesmo padrão de `sessionsRepo.listByPerson` (1 query + agrupamento em memória)
 
 ### D2 — typecheck monorepo resolvendo `@vipcam/shared` por source
 
-**Arquivo:** `tsconfig.base.json`
+**Arquivos:** `tsconfig.base.json` **E** `packages/web/tsconfig.json` (os dois — ver abaixo por quê)
 
 **Problema:** `@vipcam/shared` é pacote TS composite; consumidores (edge/web) resolvem os tipos pelos `.d.ts` em `dist/`. Typecheckar um consumidor isolado (`bun --filter '@vipcam/edge' typecheck`) contra um `dist/` stale produz erro fantasma (observado: "Module '@vipcam/shared' has no exported member 'SessionWithDetections'"). `bun run typecheck` da raiz já acerta a ordem de dependência, mas a pegadinha existe.
 
-**Fix:** adicionar em `tsconfig.base.json` `compilerOptions.paths`:
+**Estado real dos tsconfig (verificado 2026-05-15):**
+- `tsconfig.base.json` **NÃO tem `baseUrl`** nem `paths`. edge/web/shared todos `extends` ele.
+- `packages/edge/tsconfig.json` — sem `paths` próprio (herda do base).
+- `packages/web/tsconfig.json` — **tem `paths` próprio**: `{ "@/*": ["./src/*"] }`.
+- `packages/shared/tsconfig.json` — sem aliases (é o source; não importa @vipcam/shared).
+
+**Duas armadilhas que o fix DEVE tratar (senão quebra tudo):**
+
+1. **`paths` sem `baseUrl` resolve relativo a cada consumidor.** Precisa `baseUrl`. Em config `extends`-ado, opções de caminho (`baseUrl`, `paths`) resolvem relativo ao **diretório do arquivo que as declara** (TS ≥ 5.0). Declarar `"baseUrl": "."` em `tsconfig.base.json` ⇒ âncora = **raiz do repo**.
+
+2. **`paths` NÃO faz deep-merge em `extends` — a child substitui a parent inteira.** Como `packages/web/tsconfig.json` já tem seu próprio bloco `paths` (`@/*`), ele **ignora** qualquer `paths` do base. Logo o mapeamento `@vipcam/shared` precisa ser **repetido dentro do paths do web**. Pior: introduzir `baseUrl=.` (raiz) muda a semântica do `@/*` atual do web — hoje `["./src/*"]` é relativo ao dir do web (funciona porque sem baseUrl `paths` é relativo ao tsconfig que o contém); com baseUrl=raiz vira `<raiz>/src/*` (inexistente) ⇒ **quebra todos os imports `@/` do web**. Então o `@/*` do web TEM que migrar pra root-relative também.
+
+**Fix preciso:**
+
+`tsconfig.base.json` → adicionar em `compilerOptions`:
 ```jsonc
+"baseUrl": ".",
 "paths": {
   "@vipcam/shared": ["packages/shared/src/index.ts"],
   "@vipcam/shared/*": ["packages/shared/src/*"]
 }
 ```
-(caminho relativo à `baseUrl` do tsconfig.base — ajustar conforme a `baseUrl` real do arquivo). Consumidores passam a typecheckar contra o **source fresco** — elimina dependência de build-ordering. Qualquer typecheck (isolado ou root) vê o source atual.
+(edge não tem `paths` próprio ⇒ herda esses; `baseUrl` do base = dir do tsconfig.base = raiz do repo.)
 
-**Validação obrigatória:**
-- `bun run typecheck` → 3/3 exit 0
-- `bun --filter '@vipcam/edge' typecheck` isolado → passa **sem** precisar de shared dist
+`packages/web/tsconfig.json` → o bloco `paths` próprio substitui o do base, então listar **tudo**, root-relative:
+```jsonc
+"paths": {
+  "@/*": ["packages/web/src/*"],
+  "@vipcam/shared": ["packages/shared/src/index.ts"],
+  "@vipcam/shared/*": ["packages/shared/src/*"]
+}
+```
+(o `@/*` mudou de `./src/*` → `packages/web/src/*` porque agora há `baseUrl` ancorado na raiz.)
+
+`packages/edge/tsconfig.json` → **sem mudança** (herda base; edge não usa `@/*`).
+`packages/shared/tsconfig.json` → **sem mudança** (sem aliases; baseUrl herdado é inócuo).
+
+Confirmar antes de implementar qual o índice real do entrypoint do shared (`packages/shared/src/index.ts` vs outro) lendo `packages/shared/package.json` (`main`/`exports`/`types`) e ajustar o alvo do path se necessário.
+
+**Validação obrigatória (cobre as 2 armadilhas):**
+- `bun run typecheck` → **3/3** exit 0 (shared, web, edge)
+- `bun --filter '@vipcam/edge' typecheck` isolado → passa **sem** shared dist
 - `bun --filter '@vipcam/web' typecheck` isolado → passa
-- `cd packages/web && next build` → OK (Next já resolve shared por source via transpile; paths só afeta typecheck)
-- `bun test` edge + web → sem regressão (paths é compile-time; runtime edge usa NodeNext `.js`, runtime web usa bundler — nenhum afetado)
+- **`@/*` do web ainda resolve:** confirmar que algum arquivo que usa `@/components/...` typechecka E `cd packages/web && next build` passa (Next resolve `@/*` via tsconfig + transpilePackages pro shared)
+- `bun test` edge + web (de `packages/web`) → sem regressão. (paths é compile-time apenas; edge runtime usa workspace symlink via package.json, não tsconfig paths; web runtime usa bundler do Next. Nenhum afetado por `paths`.)
 
-**Risco:** mudança de resolução de tipos. Mitigação: a bateria de validação acima cobre os 3 consumidores + build + runtime.
+**Risco:** mudança de resolução de módulo em config compartilhado afeta os 3 pacotes + build. Mitigação: a bateria acima valida explicitamente os 3 consumidores, o `@/*` do web (a armadilha 2), o build e os runtimes.
 
 ### D3 — home do service-user `vipcam` → `/var/lib/vipcam`
 
