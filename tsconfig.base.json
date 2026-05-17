@@ -14,6 +14,11 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
     "allowJs": false,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@vipcam/shared": ["packages/shared/src/index.ts"],
+      "@vipcam/shared/*": ["packages/shared/src/*"]
+    }
   }
 }

@@ -4,7 +4,11 @@
     "jsx": "preserve",
     "incremental": true,
     "plugins": [{ "name": "next" }],
-    "paths": { "@/*": ["./src/*"] },
+    "paths": {
+      "@/*": ["packages/web/src/*"],
+      "@vipcam/shared": ["packages/shared/src/index.ts"],
+      "@vipcam/shared/*": ["packages/shared/src/*"]
+    },
     "moduleResolution": "bundler",
     "noEmit": true
   },
