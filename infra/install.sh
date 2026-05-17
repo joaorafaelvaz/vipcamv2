@@ -21,6 +21,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/vipcamv2}"
 SERVICE_USER="${SERVICE_USER:-vipcam}"
+SERVICE_HOME="/var/lib/vipcam"
 DOMAIN="monitoramento.franquiabv.com.br"
 
 log()  { printf "\033[1;36m[install]\033[0m %s\n" "$*"; }
@@ -32,12 +33,28 @@ fail() { printf "\033[1;31m[install]\033[0m %s\n" "$*" >&2; exit 1; }
 [[ -d "$APP_DIR/infra/systemd" ]] || fail "infra/systemd/ não encontrado em $APP_DIR — repo incompleto?"
 
 # ----- 1. Usuário de sistema -----
+# Home = /var/lib/vipcam (NÃO o checkout do repo). Caso contrário os
+# dotfiles do bun (~/.bun, ~/.cache, ~/.config, ~/.lesshst) seriam criados
+# dentro de /opt/vipcamv2 e poluiriam o git status / risco de `git add .`.
 if id -u "$SERVICE_USER" &>/dev/null; then
   log "usuário $SERVICE_USER já existe"
+  cur_home="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
+  if [[ "$cur_home" != "$SERVICE_HOME" ]]; then
+    log "movendo home de $SERVICE_USER: $cur_home -> $SERVICE_HOME"
+    usermod -d "$SERVICE_HOME" "$SERVICE_USER"
+    warn "dotfiles antigos em $cur_home NÃO foram migrados (passo operacional"
+    warn "  manual, não-destrutivo): após confirmar o serviço OK, limpe"
+    warn "  $cur_home/.bun $cur_home/.cache $cur_home/.config $cur_home/.lesshst"
+  fi
 else
-  log "criando usuário $SERVICE_USER"
-  useradd --system --home "$APP_DIR" --shell /bin/bash "$SERVICE_USER"
+  log "criando usuário $SERVICE_USER (home $SERVICE_HOME)"
+  useradd --system --home "$SERVICE_HOME" --shell /bin/bash "$SERVICE_USER"
 fi
+
+# Home do service user (bun precisa de HOME gravável p/ ~/.bun/install/cache)
+mkdir -p "$SERVICE_HOME"
+chown "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME"
+chmod 750 "$SERVICE_HOME"
 
 # Dono dos arquivos do repo
 chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
