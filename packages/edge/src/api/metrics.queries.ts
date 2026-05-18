@@ -30,8 +30,12 @@ export async function visitsFlow(days: number): Promise<VisitsFlow> {
     .where(
       sql`${sessions.started_at} >= ${start} AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
     )
-    .groupBy(sql`(${sessions.started_at} AT TIME ZONE ${tz})::date`)
-    .orderBy(sql`(${sessions.started_at} AT TIME ZONE ${tz})::date`);
+    // GROUP/ORDER BY ordinal posicional (col 1 = a expressão de data). Repetir
+    // ${tz} no group/order criaria $3/$4 ≠ $1 do select, e o Postgres casa
+    // expressões de GROUP BY sintaticamente (inclui nº do bind param) → erro
+    // "must appear in GROUP BY". Posicional referencia a coluna de saída.
+    .groupBy(sql`1`)
+    .orderBy(sql`1`);
   const points = rows.map((r) => ({ date: r.date, count: r.count }));
   return { points, trend: computeTrend(points.map((p) => p.count)) };
 }
@@ -51,10 +55,10 @@ export async function peakHours(days: number): Promise<PeakHours> {
     .where(
       sql`${sessions.started_at} >= ${start} AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
     )
-    .groupBy(
-      sql`extract(dow from (${sessions.started_at} AT TIME ZONE ${tz}))`,
-      sql`extract(hour from (${sessions.started_at} AT TIME ZONE ${tz}))`,
-    );
+    // GROUP BY posicional (col 1 = weekday, col 2 = hour). Mesmo motivo do
+    // visitsFlow: repetir ${tz} criaria binds diferentes que o Postgres não
+    // casa com os do SELECT.
+    .groupBy(sql`1, 2`);
   return { cells: rows.map((r) => ({ weekday: r.weekday, hour: r.hour, count: r.count })) };
 }
 
