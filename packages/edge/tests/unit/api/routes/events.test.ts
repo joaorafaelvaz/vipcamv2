@@ -27,6 +27,25 @@ describe("GET /api/events/stream", () => {
     expect(res.headers.get("cache-control")).toBe("no-cache");
   });
 
+  test("emite ping inicial imediatamente (flush de headers p/ proxy)", async () => {
+    const app = new Hono();
+    app.route(
+      "/api/events",
+      createEventsRoutes({
+        subscribe: () => () => {},
+        heartbeatMs: 100_000, // heartbeat longe — só o flush inicial pode emitir
+      }),
+    );
+    const res = await app.request("/api/events/stream");
+    const reader = res.body?.getReader();
+    expect(reader).toBeDefined();
+    const { value } = await reader!.read();
+    const chunk = new TextDecoder().decode(value);
+    // primeiro byte chega já no connect (sem esperar heartbeat de 100s)
+    expect(chunk).toContain("event: ping");
+    await reader!.cancel();
+  });
+
   test("registra subscriber assim que conexão abre", async () => {
     let subscribed = 0;
     const app = new Hono();
