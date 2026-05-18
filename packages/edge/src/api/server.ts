@@ -22,8 +22,10 @@ import { erpCheckins, erpClients, erpEmployees } from "../persistence/schema/erp
 import { fetchDashboardSummary } from "./dashboard.queries.js";
 import { eventBus } from "./events/event-bus.js";
 import { listPendingEnriched } from "./match-pending.js";
+import { overviewMetrics } from "./metrics.queries.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
 import { createDashboardRoutes } from "./routes/dashboard.js";
+import { createMetricsRoutes } from "./routes/metrics.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
 import { createErpRoutes } from "./routes/erp.js";
 import { createEventsRoutes } from "./routes/events.js";
@@ -51,6 +53,7 @@ export function createServer() {
   app.use("/api/persons/*", requireKey);
   app.use("/api/sessions/*", requireKey);
   app.use("/api/dashboard/*", requireKey);
+  app.use("/api/metrics/*", requireKey);
   app.use("/api/events/*", requireKey);
 
   app.get("/api/health", async (c) => {
@@ -174,6 +177,12 @@ export function createServer() {
   );
 
   app.route("/api/dashboard", createDashboardRoutes({ summary: fetchDashboardSummary }));
+  app.route(
+    "/api/metrics",
+    createMetricsRoutes({
+      overview: (days) => overviewMetrics(days),
+    }),
+  );
 
   // Onda 3 Task 3.2.6: SSE pro live feed
   app.route(
