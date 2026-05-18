@@ -29,6 +29,15 @@ export function createEventsRoutes(deps: EventsDeps): Hono {
 
   r.get("/stream", (c) => {
     return streamSSE(c, async (stream) => {
+      // Flush inicial OBRIGATÓRIO: sob Bun, o Hono streamSSE só fecha o
+      // bloco de headers (\r\n\r\n) e estabelece a resposta no PRIMEIRO
+      // write. Num feed quieto o 1º write só viria no heartbeat (15s);
+      // até lá o nginx fica preso "reading response header" e devolve
+      // 502 antes (confirmado via tcpdump: upstream manda 99 bytes de
+      // headers sem o terminador). Um ping imediato força headers +
+      // 1º byte na conexão, destravando o proxy.
+      await stream.writeSSE({ event: "ping", data: "" });
+
       // writeSSE retorna Promise mas não awaitamos (lossy mas OK pra
       // ambient feed; rate baixo: 10-30/min em pico).
       const unsubscribe = deps.subscribe((event) => {
