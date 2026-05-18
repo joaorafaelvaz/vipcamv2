@@ -24,8 +24,8 @@ export function RecurrenceDonut({ data }: { data: RecurrenceBreakdown }) {
       <ResponsiveContainer width="100%" height={160}>
         <PieChart>
           <Pie data={pie} dataKey="value" innerRadius={40} outerRadius={60}>
-            {pie.map((_, i) => (
-              <Cell key={i} fill={colors[i]} />
+            {pie.map((slice, i) => (
+              <Cell key={slice.name} fill={colors[i]} />
             ))}
           </Pie>
           <Tooltip />

@@ -72,9 +72,7 @@ export async function recurrence(days: number): Promise<RecurrenceBreakdown> {
     .select({ c: sql<number>`count(*)::int` })
     .from(sessions)
     .innerJoin(persons, sql`${persons.id} = ${sessions.person_id}`)
-    .where(
-      sql`${sessions.started_at} >= ${start} AND ${persons.person_type} = 'client'`,
-    );
+    .where(sql`${sessions.started_at} >= ${start} AND ${persons.person_type} = 'client'`);
   const perClient = await db
     .select({
       personId: sql<string>`${persons.id}`,

@@ -7,7 +7,8 @@ export function PeakHoursHeatmap({ cells }: { cells: PeakHourCell[] }) {
     return <div className="text-slate-500 italic p-8 text-center">Sem dados no período</div>;
   }
   const max = Math.max(...cells.map((c) => c.count), 1);
-  const at = (w: number, h: number) => cells.find((c) => c.weekday === w && c.hour === h)?.count ?? 0;
+  const at = (w: number, h: number) =>
+    cells.find((c) => c.weekday === w && c.hour === h)?.count ?? 0;
   const hours = Array.from({ length: 24 }, (_, h) => h);
   return (
     <div className="rounded-md border bg-white p-3 overflow-x-auto">

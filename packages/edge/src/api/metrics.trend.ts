@@ -29,7 +29,6 @@ export function computeTrend(counts: number[]): Trend {
   const rawSlope = (n * sxy - sx * sy) / denom;
   // arredonda p/ estabilidade do snapshot/teste
   const slope = Math.round(rawSlope * 1000) / 1000;
-  const direction =
-    Math.abs(slope) < FLAT_DEADBAND ? "flat" : slope > 0 ? "up" : "down";
+  const direction = Math.abs(slope) < FLAT_DEADBAND ? "flat" : slope > 0 ? "up" : "down";
   return { slope, direction };
 }

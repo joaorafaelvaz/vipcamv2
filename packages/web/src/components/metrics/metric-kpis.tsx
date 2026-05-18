@@ -2,12 +2,11 @@ import type { MetricsOverview } from "@vipcam/shared";
 
 export function MetricKpis({ data }: { data: MetricsOverview }) {
   const total = data.recurrence.total_visits;
-  const avgPerDay = data.visits.points.length
-    ? Math.round(total / data.visits.points.length)
-    : 0;
+  const avgPerDay = data.visits.points.length ? Math.round(total / data.visits.points.length) : 0;
   const idv = data.recurrence.identified_visits;
   const pctReturning = idv > 0 ? Math.round((data.recurrence.returning_count / idv) * 100) : 0;
-  const topEmotion = [...data.sentiment.buckets].sort((a, b) => b.count - a.count)[0]?.emotion ?? "—";
+  const topEmotion =
+    [...data.sentiment.buckets].sort((a, b) => b.count - a.count)[0]?.emotion ?? "—";
   const Card = ({ label, value }: { label: string; value: string }) => (
     <div className="flex-1 rounded-md border bg-white p-3">
       <div className="text-xs text-slate-500">{label}</div>
