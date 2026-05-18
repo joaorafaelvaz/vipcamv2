@@ -12,8 +12,11 @@ import { persons } from "../persistence/schema/persons.js";
 import { sessions } from "../persistence/schema/sessions.js";
 import { computeTrend } from "./metrics.trend.js";
 
-function windowStart(days: number): Date {
-  return new Date(Date.now() - days * 24 * 3600 * 1000);
+// ISO string (não Date): o driver postgres.js 3.4.9 sob Bun não serializa
+// um Date cru passado como bind param em sql`` raw (TypeError no Bind).
+// Bindamos texto e fazemos cast explícito `::timestamptz` no SQL.
+function windowStart(days: number): string {
+  return new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
 }
 
 export async function visitsFlow(days: number): Promise<VisitsFlow> {
@@ -28,7 +31,7 @@ export async function visitsFlow(days: number): Promise<VisitsFlow> {
     .from(sessions)
     .leftJoin(persons, sql`${persons.id} = ${sessions.person_id}`)
     .where(
-      sql`${sessions.started_at} >= ${start} AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
+      sql`${sessions.started_at} >= ${start}::timestamptz AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
     )
     // GROUP/ORDER BY ordinal posicional (col 1 = a expressão de data). Repetir
     // ${tz} no group/order criaria $3/$4 ≠ $1 do select, e o Postgres casa
@@ -53,7 +56,7 @@ export async function peakHours(days: number): Promise<PeakHours> {
     .from(sessions)
     .leftJoin(persons, sql`${persons.id} = ${sessions.person_id}`)
     .where(
-      sql`${sessions.started_at} >= ${start} AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
+      sql`${sessions.started_at} >= ${start}::timestamptz AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
     )
     // GROUP BY posicional (col 1 = weekday, col 2 = hour). Mesmo motivo do
     // visitsFlow: repetir ${tz} criaria binds diferentes que o Postgres não
@@ -70,13 +73,13 @@ export async function recurrence(days: number): Promise<RecurrenceBreakdown> {
     .from(sessions)
     .leftJoin(persons, sql`${persons.id} = ${sessions.person_id}`)
     .where(
-      sql`${sessions.started_at} >= ${start} AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
+      sql`${sessions.started_at} >= ${start}::timestamptz AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
     );
   const [idv] = await db
     .select({ c: sql<number>`count(*)::int` })
     .from(sessions)
     .innerJoin(persons, sql`${persons.id} = ${sessions.person_id}`)
-    .where(sql`${sessions.started_at} >= ${start} AND ${persons.person_type} = 'client'`);
+    .where(sql`${sessions.started_at} >= ${start}::timestamptz AND ${persons.person_type} = 'client'`);
   const perClient = await db
     .select({
       personId: sql<string>`${persons.id}`,
@@ -86,11 +89,12 @@ export async function recurrence(days: number): Promise<RecurrenceBreakdown> {
     .innerJoin(sessions, sql`${sessions.person_id} = ${persons.id}`)
     .where(sql`${persons.person_type} = 'client'`)
     .groupBy(sql`${persons.id}`)
-    .having(sql`bool_or(${sessions.started_at} >= ${start})`);
+    .having(sql`bool_or(${sessions.started_at} >= ${start}::timestamptz)`);
   let newCount = 0;
   let returningCount = 0;
+  const startMs = new Date(start).getTime();
   for (const c of perClient) {
-    if (new Date(c.firstEver) >= start) newCount++;
+    if (new Date(c.firstEver).getTime() >= startMs) newCount++;
     else returningCount++;
   }
   return {
@@ -112,7 +116,7 @@ export async function sentiment(days: number): Promise<SentimentBreakdown> {
     .from(sessions)
     .leftJoin(persons, sql`${persons.id} = ${sessions.person_id}`)
     .where(
-      sql`${sessions.started_at} >= ${start} AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
+      sql`${sessions.started_at} >= ${start}::timestamptz AND (${persons.person_type} IS NULL OR ${persons.person_type} <> 'employee')`,
     )
     .groupBy(sql`coalesce(${sessions.dominant_emotion}, 'n/d')`)
     .orderBy(sql`count(*) desc`);
