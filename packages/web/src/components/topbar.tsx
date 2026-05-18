@@ -3,7 +3,7 @@
 import { Badge } from "@/components/ui/badge";
 import { useDashboardSummary } from "@/lib/queries/dashboard";
 import { cn } from "@/lib/utils";
-import { Activity, AlertCircle, Users } from "lucide-react";
+import { Activity, AlertCircle, BarChart3, Users } from "lucide-react";
 import type { Route } from "next";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -12,6 +12,7 @@ const TABS = [
   { href: "/live" as Route, label: "Live", icon: Activity },
   { href: "/people" as Route, label: "Pessoas", icon: Users },
   { href: "/matches" as Route, label: "Matches", icon: AlertCircle },
+  { href: "/metrics" as Route, label: "Métricas", icon: BarChart3 },
 ] as const;
 
 export function Topbar() {
