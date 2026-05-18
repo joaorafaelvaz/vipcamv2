@@ -47,19 +47,20 @@ Sem mudança de comportamento de produto existente. Adiciona uma rota read-only.
 
 ## 3. Escopo de dados (definições precisas)
 
-Fonte: tabelas `sessions`, `detections`, `persons`, `erp_clients` (já existentes).
+Fonte: tabelas `sessions`, `persons`, `erp_clients` (já existentes). **A unidade de "visita" é a `session`**, e o vínculo autoritativo sessão→pessoa é a coluna **`sessions.person_id`** (setada no match por `sessionsRepo` — `sessions.repo.ts:111` faz `.set({ person_id, linked_erp_checkin_id })`; há índice `sessions_person_idx`). **Não** usar `detections.person_id` para classificar sessões (seria ambíguo p/ sessões com detections mistas e não-autoritativo).
 
-- **Funcionário** = `persons.person_type = 'employee'`. Sessões ligadas a um person funcionário (via `detections.person_id → persons`) são **excluídas** de todas as métricas.
-- **Sessão anônima** = nenhuma detection da sessão tem `person_id` (não casada). **Incluída** em fluxo/pico/sentimento.
-- **Cliente identificado** = `persons.person_type = 'client'` (casado via ERP).
-- **Fluxo de visitas:** nº de sessões/dia no período, exceto funcionários. Tendência = regressão linear simples sobre os pontos diários (função pura testável).
-- **Horários de pico:** contagem de sessões por (dia-da-semana, hora-do-dia) de `sessions.started_at`, exceto funcionários.
-- **Recorrência (só clientes identificados):** no período,
-  - **novo** = `persons.first_seen_at >= início_janela`
-  - **recorrente** = `persons.first_seen_at < início_janela` E tem ≥1 sessão na janela
-  - resposta inclui `identified_visits` e `total_visits` (todas as visitas não-funcionário) p/ o label honesto. `identified_visits = 0` → UI mostra "Sem clientes identificados no período" (não donut vazio).
-- **Sentimento:** distribuição de `detections.dominant_emotion` no período (exceto funcionários); `null` → bucket explícito `"n/d"`. Tendência opcional v1.1 (não bloqueia).
-- **Timezone:** agregação por dia/hora usa o TZ configurado da app (mesma convenção de `occurred_at`/`detected_at`). O spec do plano deve registrar a const/env de TZ usada e os testes fixam um TZ determinístico.
+- **Sessão anônima** = `sessions.person_id IS NULL`. **Incluída** em fluxo/pico/sentimento.
+- **Sessão de funcionário** = `sessions.person_id` aponta p/ um person com `persons.person_type = 'employee'`. **Excluída de todas as métricas.**
+- **Sessão não-funcionário** (base de fluxo/pico/sentimento) = `LEFT JOIN persons ON persons.id = sessions.person_id WHERE persons.person_type IS NULL OR persons.person_type <> 'employee'` (null = anônima, entra; client/anonymous entram; só employee sai). Obs: o enum `persons.person_type` tem 3 valores (`client|employee|anonymous`) — por isso o filtro é `<> 'employee'`, **não** `= 'client'`.
+- **Cliente identificado** = sessão cujo person tem `persons.person_type = 'client'`.
+- **Fluxo de visitas:** nº de sessões não-funcionário por dia (bucket de `sessions.started_at`, ver Timezone) no período. Tendência = regressão linear simples (mínimos quadrados) sobre os pontos diários — função pura testável.
+- **Horários de pico:** contagem de sessões não-funcionário por (dia-da-semana, hora-do-dia) de `sessions.started_at` (ver Timezone).
+- **Recorrência (só clientes identificados):** "primeira visita" de um cliente = **`MIN(sessions.started_at)` daquele `person_id`** (derivado de sessões — mesma convenção já usada em `persons.repo.ts:145`; **não** usar a coluna `persons.first_seen_at`, que é `defaultNow()` na criação da row e não reflete a 1ª visita real). No período `[janelaInício, agora]`, para cada cliente com ≥1 sessão na janela:
+  - **novo** = `MIN(sessions.started_at do cliente) >= janelaInício` (1ª visita de todas caiu na janela)
+  - **recorrente** = `MIN(sessions.started_at do cliente) < janelaInício` (já tinha visita antes da janela)
+  - resposta inclui `identified_visits` (sessões de clientes na janela) e `total_visits` (todas as sessões não-funcionário na janela) p/ o label honesto. `identified_visits = 0` → UI mostra "Sem clientes identificados no período" (não donut vazio).
+- **Sentimento:** distribuição de `sessions.dominant_emotion` (já é o rollup por sessão via `mode()` — consistente com a unidade "visita"; **não** reagregar `detections`) das sessões não-funcionário no período; `null` → bucket explícito `"n/d"`. Tendência ao longo do tempo é v1.1 opcional (não bloqueia).
+- **Timezone (decisão definida aqui — não há convenção pré-existente):** todos os timestamps são `timestamptz` (UTC) e o codebase **não tem** tratamento de TZ. Como a barbearia é local (Brasil), buckets de dia/hora em UTC ficariam deslocados ~3h e distorceriam pico/fluxo. Decisão: **nova env `METRICS_TZ` (default `America/Sao_Paulo`)** validada no schema de env (Zod, junto das demais). Buckets calculados em SQL via `(${sessions.started_at} AT TIME ZONE 'UTC' AT TIME ZONE :METRICS_TZ)::date` / `EXTRACT(...)`. Os testes de integração fixam `METRICS_TZ` explícito e asseguram que uma sessão perto da meia-noite cai no dia local correto.
 
 ---
 
@@ -69,9 +70,10 @@ Segue os padrões do codebase (`dashboard.queries.ts` + `createDashboardRoutes` 
 
 ### Edge (Bun+Hono+Drizzle)
 
-- **`packages/edge/src/api/metrics.queries.ts`** — uma função pura por métrica: `visitsFlow(db, days)`, `peakHours(db, days)`, `recurrence(db, days)`, `sentiment(db, days)`. Cada uma roda GROUP BY com `WHERE` de range + exclusão de funcionário. Espelha `dashboard.queries.ts`.
+- **`packages/edge/src/api/metrics.queries.ts`** — uma função pura por métrica: `visitsFlow(db, days, tz)`, `peakHours(db, days, tz)`, `recurrence(db, days)`, `sentiment(db, days)`. Cada uma roda GROUP BY sobre `sessions` (LEFT JOIN `persons` p/ excluir funcionário, ver §3) com `WHERE` de range. Espelha `dashboard.queries.ts`. `tz` = `env.METRICS_TZ`.
+- **Env:** adicionar `METRICS_TZ` (string, default `America/Sao_Paulo`) ao schema Zod de env do edge (`config/env.ts`) + ao `edge.env.example`.
 - **`packages/edge/src/api/routes/metrics.ts`** — `createMetricsRoutes(deps)` exportando `GET /overview`. Valida `days` como enum `{7,30}` (default 7); inválido → `400` tipado (mesmo padrão dos outros routes).
-- **`server.ts`** — montar `app.route("/api/metrics", createMetricsRoutes({...}))` + `app.use("/api/metrics/*", requireKey)` (igual aos demais prefixos `/api/`).
+- **`server.ts`** — montar `app.route("/api/metrics", createMetricsRoutes({...}))` + proteger o prefixo com o mesmo middleware dos demais `/api/*` (a const local `requireKey`, produzida por `apiKeyMiddleware(env.API_KEY, …)` em `server.ts`; confirmar o símbolo real ao implementar — é o mesmo usado em `/api/persons/*` etc.).
 - **`overviewMetrics(db, days)`** — orquestra as 4 funções e devolve `MetricsOverview`. Em caso de período vazio, retorna estrutura vazia tipada (arrays `[]`, contadores `0`) — nunca `NaN`/throw.
 
 ### Shared
@@ -127,7 +129,7 @@ export interface MetricsOverview {
 
 ## 6. Estratégia de testes
 
-- **Edge integration (Postgres `vipcam_test`):** seed cobrindo — dia com mix anônimo+identificado; funcionário (deve sumir de todas as métricas); cliente novo vs recorrente (`first_seen_at` dentro/fora da janela); detection com `dominant_emotion` null; período totalmente vazio. Assertar os 4 blocos do `overview` + TZ determinístico. Mesma estrutura dos testes `match-pending`/repos.
+- **Edge integration (Postgres `vipcam_test`):** seed via `sessionsRepo` cobrindo — sessão anônima (`person_id NULL`) + sessão de cliente identificado + sessão de funcionário (`person_id` → person `employee`, deve sumir de TODAS as métricas); cliente **novo** (`MIN(sessions.started_at)` dentro da janela) vs **recorrente** (1ª sessão antes da janela + sessão na janela); sessão com `dominant_emotion` NULL (→ bucket `"n/d"`); período totalmente vazio (estrutura vazia tipada). **TZ:** com `METRICS_TZ` fixo, uma sessão `started_at` perto da meia-noite UTC deve cair no dia/hora **local** correto. Assertar os 4 blocos do `overview`. Mesma estrutura dos testes `match-pending`/repos.
 - **Edge unit:** validação do enum `days`; função pura de tendência (slope/direction).
 - **Web:** render de cada componente de gráfico com mock + estado vazio (rodar de `packages/web`).
 - **Sem E2E** (continua fora de escopo — Onda 3 §11).
