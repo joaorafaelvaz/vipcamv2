@@ -41,10 +41,23 @@ if id -u "$SERVICE_USER" &>/dev/null; then
   cur_home="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
   if [[ "$cur_home" != "$SERVICE_HOME" ]]; then
     log "movendo home de $SERVICE_USER: $cur_home -> $SERVICE_HOME"
-    usermod -d "$SERVICE_HOME" "$SERVICE_USER"
-    warn "dotfiles antigos em $cur_home NÃO foram migrados (passo operacional"
-    warn "  manual, não-destrutivo): após confirmar o serviço OK, limpe"
-    warn "  $cur_home/.bun $cur_home/.cache $cur_home/.config $cur_home/.lesshst"
+    # `usermod -d` falha se o usuário tem processos vivos (edge/web). Sob
+    # `set -e` isso abortaria o install inteiro, deixando estado parcial.
+    # Tratamos gracioso: tenta; se falhar, avisa com a remediação exata e
+    # SEGUE (o resto do install é idempotente e re-rodável).
+    if usermod -d "$SERVICE_HOME" "$SERVICE_USER" 2>/tmp/vipcam-usermod.err; then
+      warn "dotfiles antigos em $cur_home NÃO foram migrados (passo operacional"
+      warn "  manual, não-destrutivo): após confirmar o serviço OK, limpe"
+      warn "  $cur_home/.bun $cur_home/.cache $cur_home/.config $cur_home/.lesshst"
+    else
+      warn "usermod NÃO moveu o home ($(cat /tmp/vipcam-usermod.err 2>/dev/null))."
+      warn "  Provável causa: serviços vipcam em execução. Remediação:"
+      warn "    sudo systemctl stop vipcam-edge vipcam-web"
+      warn "    sudo bash $0"
+      warn "    sudo systemctl start vipcam-edge vipcam-web"
+      warn "  (home segue $cur_home até lá; o resto do install continua)"
+    fi
+    rm -f /tmp/vipcam-usermod.err
   fi
 else
   log "criando usuário $SERVICE_USER (home $SERVICE_HOME)"
