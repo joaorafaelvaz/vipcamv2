@@ -4,10 +4,20 @@
     "jsx": "preserve",
     "incremental": true,
     "plugins": [{ "name": "next" }],
+    // regression(onda-4 D2): baseUrl/paths LOCAIS a este arquivo — NÃO herdar do
+    // tsconfig.base.json. tsc/next ancoram paths no dir do arquivo que DECLARA
+    // baseUrl (TS>=5); o resolver tsconfig-paths do Bun (bun test) ancora no dir
+    // do tsconfig que CONTÉM o bloco paths. Com baseUrl-root herdado + paths
+    // root-relative (estado pós-D2) o Bun resolvia packages/web/packages/web/src/*
+    // e quebrava 11 testes de componente. baseUrl="." próprio + paths relativos a
+    // packages/web/ deixam a âncora idêntica nos 3 (tsc/next/bun). NÃO voltar a
+    // root-relative e NÃO mexer no tsconfig.base.json (edge herda dele e resolve
+    // @vipcam/shared por source — objetivo do D2).
+    "baseUrl": ".",
     "paths": {
-      "@/*": ["packages/web/src/*"],
-      "@vipcam/shared": ["packages/shared/src/index.ts"],
-      "@vipcam/shared/*": ["packages/shared/src/*"]
+      "@/*": ["./src/*"],
+      "@vipcam/shared": ["../shared/src/index.ts"],
+      "@vipcam/shared/*": ["../shared/src/*"]
     },
     "moduleResolution": "bundler",
     "noEmit": true
