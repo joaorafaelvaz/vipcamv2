@@ -91,3 +91,42 @@ export interface PaginatedResponse<T> {
   items: T[];
   total: number;
 }
+
+// ---- Onda 5: dashboard de métricas de negócio ----
+
+export interface VisitsFlowPoint {
+  date: string; // local date YYYY-MM-DD
+  count: number;
+}
+export interface VisitsFlow {
+  points: VisitsFlowPoint[];
+  trend: { slope: number; direction: "up" | "down" | "flat" };
+}
+export interface PeakHourCell {
+  weekday: number; // 0-6 (0=domingo, local)
+  hour: number; // 0-23 (local)
+  count: number;
+}
+export interface PeakHours {
+  cells: PeakHourCell[];
+}
+export interface RecurrenceBreakdown {
+  new_count: number;
+  returning_count: number;
+  identified_visits: number;
+  total_visits: number;
+}
+export interface SentimentBucket {
+  emotion: string; // inclui "n/d"
+  count: number;
+}
+export interface SentimentBreakdown {
+  buckets: SentimentBucket[];
+}
+export interface MetricsOverview {
+  days: 7 | 30;
+  visits: VisitsFlow;
+  peak: PeakHours;
+  recurrence: RecurrenceBreakdown;
+  sentiment: SentimentBreakdown;
+}
