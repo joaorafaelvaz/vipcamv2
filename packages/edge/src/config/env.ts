@@ -47,6 +47,9 @@ const envSchema = z
     // tem checkins mais antigos que valem ingerir; diminuir se ERP tem muito
     // ruído antigo.
     ERP_CHECKINS_INITIAL_LOOKBACK_HOURS: z.coerce.number().int().positive().default(24),
+    // Onda 5: timezone p/ buckets de dia/hora das métricas. Timestamps são
+    // timestamptz (UTC); a barbearia é local — sem isso pico/fluxo deslocam ~3h.
+    METRICS_TZ: z.string().min(1).default("America/Sao_Paulo"),
   })
   .refine(
     (v) =>
