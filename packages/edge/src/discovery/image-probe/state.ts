@@ -40,7 +40,12 @@ function blank(): Internal {
 
 export function startImageProbe(cfg: ImageProbeConfig): ImageProbeStatus {
   if (st.active) return snapshot();
-  const windowMinutes = Math.min(Math.max(cfg.windowMinutes, 0), HARD_CAP_MINUTES);
+  const wRaw = Number.isFinite(cfg.windowMinutes) ? cfg.windowMinutes : 0;
+  const windowMinutes = Math.min(Math.max(wRaw, 0), HARD_CAP_MINUTES);
+  const maxSamples =
+    Number.isFinite(cfg.maxSamples) && cfg.maxSamples > 0
+      ? Math.floor(cfg.maxSamples)
+      : Number.MAX_SAFE_INTEGER;
   const now = Date.now();
   const runId = `run-${new Date(now).toISOString().replace(/[:.]/g, "-")}`;
   const timer = setTimeout(
@@ -54,7 +59,7 @@ export function startImageProbe(cfg: ImageProbeConfig): ImageProbeStatus {
     active: true,
     run_id: runId,
     window_minutes: windowMinutes,
-    max_samples: cfg.maxSamples,
+    max_samples: maxSamples,
     samples_captured: 0,
     sample_dir: cfg.sampleDir,
     started_at: new Date(now).toISOString(),

@@ -3,6 +3,7 @@ import {
   _resetImageProbe,
   imageProbeStatus,
   isProbeActive,
+  noteSample,
   startImageProbe,
   stopImageProbe,
 } from "../../../../src/discovery/image-probe/state.js";
@@ -36,13 +37,24 @@ describe("image probe state", () => {
   });
 
   test("auto-expire deactivates after window", async () => {
-    startImageProbe({ windowMinutes: 0.001, maxSamples: 10, sampleDir: "/tmp/x" });
-    await new Promise((r) => setTimeout(r, 120));
+    startImageProbe({ windowMinutes: 0, maxSamples: 10, sampleDir: "/tmp/x" });
+    await new Promise((r) => setTimeout(r, 50));
     expect(isProbeActive()).toBe(false);
   });
 
+  test("non-finite windowMinutes is handled safely (no RangeError)", () => {
+    let s!: ReturnType<typeof startImageProbe>;
+    expect(() => {
+      s = startImageProbe({ windowMinutes: NaN, maxSamples: 10, sampleDir: "/tmp/x" });
+    }).not.toThrow();
+    expect(s.active).toBe(true);
+    expect(Number.isFinite(s.window_minutes)).toBe(true);
+    expect(s.window_minutes).toBe(0);
+    const status = imageProbeStatus();
+    expect(() => new Date(status.expires_at!).toISOString()).not.toThrow();
+  });
+
   test("reaching maxSamples flips inactive via noteSample", () => {
-    const { noteSample } = require("../../../../src/discovery/image-probe/state.js");
     startImageProbe({ windowMinutes: 5, maxSamples: 2, sampleDir: "/tmp/x" });
     noteSample();
     expect(isProbeActive()).toBe(true);
