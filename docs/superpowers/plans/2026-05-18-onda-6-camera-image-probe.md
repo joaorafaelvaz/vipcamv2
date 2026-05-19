@@ -1248,7 +1248,7 @@ describe("decide", () => {
       faceEvents: 40,
       metrics: [
         ev({ samples: 40, with_image: 2, usable_face: 1 }),
-        sn({ samples: 40, with_image: 39, usable_face: 31, median_delta_ms: 800, median_bbox_px: 100 }),
+        sn({ samples: 40, with_image: 39, usable_face: 32, median_delta_ms: 800, median_bbox_px: 100 }),
       ],
       thresholds: DEFAULT_THRESHOLDS,
     });
