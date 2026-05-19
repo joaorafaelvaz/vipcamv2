@@ -24,8 +24,20 @@ import { eventBus } from "./events/event-bus.js";
 import { listPendingEnriched } from "./match-pending.js";
 import { overviewMetrics } from "./metrics.queries.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
+import { DEFAULT_THRESHOLDS } from "../discovery/image-probe/decision.js";
+import {
+  buildImageSourceReport,
+  renderDecisionMarkdown,
+} from "../discovery/image-probe/report.js";
+import {
+  imageProbeStatus,
+  startImageProbe,
+  stopImageProbe,
+} from "../discovery/image-probe/state.js";
+import { validateSamples } from "../discovery/image-probe/validate.js";
 import { createDashboardRoutes } from "./routes/dashboard.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
+import { createImageProbeRoutes } from "./routes/image-probe.js";
 import { createErpRoutes } from "./routes/erp.js";
 import { createEventsRoutes } from "./routes/events.js";
 import { createMatchRoutes } from "./routes/matches.js";
@@ -91,6 +103,48 @@ export function createServer() {
     };
     return c.json(body, allOk ? 200 : 503);
   });
+  // Onda 6 — camera image-source probe control surface.
+  // Montado ANTES de /api/discovery (defensivo: discovery.ts só define
+  // /probe + /last-report, sem wildcard, então não há shadow). Herda o
+  // requireKey de /api/discovery/* (app.use acima).
+  const PROBE_SAMPLES_DIR =
+    process.env.PROBE_SAMPLES_DIR ?? "/var/lib/vipcam/probe-samples";
+  const REID_BASE_URL = process.env.REID_BASE_URL ?? "http://127.0.0.1:5005";
+  app.route(
+    "/api/discovery/image-probe",
+    createImageProbeRoutes({
+      start: (cfg) => startImageProbe({ ...cfg, sampleDir: PROBE_SAMPLES_DIR }),
+      stop: stopImageProbe,
+      status: imageProbeStatus,
+      defaultThresholds: DEFAULT_THRESHOLDS,
+      runValidation: async (thresholds) => {
+        const v = await validateSamples({
+          sampleDir: PROBE_SAMPLES_DIR,
+          reidBaseUrl: REID_BASE_URL,
+          thresholds,
+        });
+        const report = buildImageSourceReport({
+          runId: imageProbeStatus().run_id ?? "run-adhoc",
+          faceEvents: v.faceEvents,
+          metrics: v.metrics,
+          thresholds,
+        });
+        await fs.mkdir(PROBE_SAMPLES_DIR, { recursive: true });
+        await fs.writeFile(
+          path.join(PROBE_SAMPLES_DIR, "report.json"),
+          JSON.stringify(report, null, 2),
+          "utf8",
+        );
+        await fs.writeFile(
+          path.join(PROBE_SAMPLES_DIR, "decision.md"),
+          renderDecisionMarkdown(report),
+          "utf8",
+        );
+        return report;
+      },
+    }),
+  );
+
   app.route(
     "/api/discovery",
     createDiscoveryRoutes({
