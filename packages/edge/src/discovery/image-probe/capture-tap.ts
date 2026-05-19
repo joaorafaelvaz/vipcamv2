@@ -2,15 +2,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProbeSampleMeta } from "@vipcam/shared";
 import { logger } from "../../obs/logger.js";
-import { activeSampleDir, isProbeActive, noteSample } from "./state.js";
 import { parseMultipartPartsRaw } from "./raw-multipart.js";
+import { activeSampleDir, isProbeActive, noteSample } from "./state.js";
 
 const MAX_QUEUE = 64;
 const MAX_PENDING_BYTES = 8 * 1024 * 1024; // 8MB defensive cap
 
-export interface CaptureTap {
-  (chunk: Buffer, boundary: string): void;
-}
+export type CaptureTap = (chunk: Buffer, boundary: string) => void;
 
 export function makeCaptureTap(): CaptureTap {
   let pending: Buffer = Buffer.alloc(0);

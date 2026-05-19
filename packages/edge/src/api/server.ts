@@ -4,6 +4,14 @@ import type { HealthCheck, HealthResponse } from "@vipcam/shared";
 import { sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { getEnv } from "../config/env.js";
+import { DEFAULT_THRESHOLDS } from "../discovery/image-probe/decision.js";
+import { buildImageSourceReport, renderDecisionMarkdown } from "../discovery/image-probe/report.js";
+import {
+  imageProbeStatus,
+  startImageProbe,
+  stopImageProbe,
+} from "../discovery/image-probe/state.js";
+import { validateSamples } from "../discovery/image-probe/validate.js";
 import { getLatestReport, runDiscovery } from "../discovery/runner.js";
 import { pollCheckins } from "../erp-sync/checkins.js";
 import { syncClients } from "../erp-sync/clients.js";
@@ -24,22 +32,11 @@ import { eventBus } from "./events/event-bus.js";
 import { listPendingEnriched } from "./match-pending.js";
 import { overviewMetrics } from "./metrics.queries.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
-import { DEFAULT_THRESHOLDS } from "../discovery/image-probe/decision.js";
-import {
-  buildImageSourceReport,
-  renderDecisionMarkdown,
-} from "../discovery/image-probe/report.js";
-import {
-  imageProbeStatus,
-  startImageProbe,
-  stopImageProbe,
-} from "../discovery/image-probe/state.js";
-import { validateSamples } from "../discovery/image-probe/validate.js";
 import { createDashboardRoutes } from "./routes/dashboard.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
-import { createImageProbeRoutes } from "./routes/image-probe.js";
 import { createErpRoutes } from "./routes/erp.js";
 import { createEventsRoutes } from "./routes/events.js";
+import { createImageProbeRoutes } from "./routes/image-probe.js";
 import { createMatchRoutes } from "./routes/matches.js";
 import { createMetricsRoutes } from "./routes/metrics.js";
 import { createPersonsRoutes } from "./routes/persons.js";
@@ -107,8 +104,7 @@ export function createServer() {
   // Montado ANTES de /api/discovery (defensivo: discovery.ts só define
   // /probe + /last-report, sem wildcard, então não há shadow). Herda o
   // requireKey de /api/discovery/* (app.use acima).
-  const PROBE_SAMPLES_DIR =
-    process.env.PROBE_SAMPLES_DIR ?? "/var/lib/vipcam/probe-samples";
+  const PROBE_SAMPLES_DIR = process.env.PROBE_SAMPLES_DIR ?? "/var/lib/vipcam/probe-samples";
   const REID_BASE_URL = process.env.REID_BASE_URL ?? "http://127.0.0.1:5005";
   app.route(
     "/api/discovery/image-probe",

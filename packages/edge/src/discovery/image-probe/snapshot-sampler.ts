@@ -17,7 +17,9 @@ export function isFaceish(
   if (codeIncludes.some((c) => code.toLowerCase().includes(c.toLowerCase()))) return true;
   const d = evt.data;
   if (d && typeof d === "object") {
-    const keys = Object.keys(d as Record<string, unknown>).join(",").toLowerCase();
+    const keys = Object.keys(d as Record<string, unknown>)
+      .join(",")
+      .toLowerCase();
     if (keys.includes("face") || keys.includes("object")) return true;
   }
   return false;

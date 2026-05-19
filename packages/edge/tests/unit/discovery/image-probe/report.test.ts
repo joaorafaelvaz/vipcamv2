@@ -10,7 +10,17 @@ describe("buildImageSourceReport", () => {
     const r = buildImageSourceReport({
       runId: "run-x",
       faceEvents: 5,
-      metrics: [{ source: "event", samples: 5, with_image: 5, usable_face: 0, median_bbox_px: null, median_infer_ms: 10, median_delta_ms: null }],
+      metrics: [
+        {
+          source: "event",
+          samples: 5,
+          with_image: 5,
+          usable_face: 0,
+          median_bbox_px: null,
+          median_infer_ms: 10,
+          median_delta_ms: null,
+        },
+      ],
       thresholds: DEFAULT_THRESHOLDS,
     });
     expect(r.conclusion).toBe("inconclusive");
@@ -25,7 +35,17 @@ describe("buildImageSourceReport", () => {
     const r = buildImageSourceReport({
       runId: "run-y",
       faceEvents: 40,
-      metrics: [{ source: "event", samples: 40, with_image: 36, usable_face: 32, median_bbox_px: 120, median_infer_ms: 50, median_delta_ms: null }],
+      metrics: [
+        {
+          source: "event",
+          samples: 40,
+          with_image: 36,
+          usable_face: 32,
+          median_bbox_px: 120,
+          median_infer_ms: 50,
+          median_delta_ms: null,
+        },
+      ],
       thresholds: DEFAULT_THRESHOLDS,
     });
     const md = renderDecisionMarkdown(r);

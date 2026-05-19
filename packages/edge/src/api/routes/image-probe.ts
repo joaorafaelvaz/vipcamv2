@@ -79,7 +79,10 @@ export function createImageProbeRoutes(deps: ImageProbeDeps): Hono {
     }
     const p = validateBody.safeParse(raw);
     if (!p.success) return c.json({ error: "invalid body", detail: p.error.issues }, 400);
-    const thr: Thresholds = { ...deps.defaultThresholds, ...(p.data?.thresholds ?? {}) } as Thresholds;
+    const thr: Thresholds = {
+      ...deps.defaultThresholds,
+      ...(p.data?.thresholds ?? {}),
+    } as Thresholds;
     const report = await deps.runValidation(thr);
     return c.json(report);
   });

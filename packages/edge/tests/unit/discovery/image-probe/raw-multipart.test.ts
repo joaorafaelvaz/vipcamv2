@@ -4,11 +4,7 @@ import { parseMultipartPartsRaw } from "../../../../src/discovery/image-probe/ra
 const B = "--myboundary";
 
 function part(headers: string, body: Buffer): Buffer {
-  return Buffer.concat([
-    Buffer.from(`${B}\r\n${headers}\r\n\r\n`),
-    body,
-    Buffer.from("\r\n"),
-  ]);
+  return Buffer.concat([Buffer.from(`${B}\r\n${headers}\r\n\r\n`), body, Buffer.from("\r\n")]);
 }
 
 describe("parseMultipartPartsRaw", () => {
@@ -29,10 +25,7 @@ describe("parseMultipartPartsRaw", () => {
       Buffer.from("--myboundaryISH-not-real"),
       Buffer.from([0x00, 0x80, 0xfe, 0xff]),
     ]);
-    const buf = Buffer.concat([
-      part("Content-Type: image/jpeg", evil),
-      Buffer.from(`${B}`),
-    ]);
+    const buf = Buffer.concat([part("Content-Type: image/jpeg", evil), Buffer.from(`${B}`)]);
     const { parts } = parseMultipartPartsRaw(buf, B);
     expect(parts).toHaveLength(1);
     expect(parts[0]!.headers["content-type"]).toBe("image/jpeg");

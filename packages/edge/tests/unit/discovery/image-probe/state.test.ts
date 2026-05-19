@@ -45,7 +45,7 @@ describe("image probe state", () => {
   test("non-finite windowMinutes is handled safely (no RangeError)", () => {
     let s!: ReturnType<typeof startImageProbe>;
     expect(() => {
-      s = startImageProbe({ windowMinutes: NaN, maxSamples: 10, sampleDir: "/tmp/x" });
+      s = startImageProbe({ windowMinutes: Number.NaN, maxSamples: 10, sampleDir: "/tmp/x" });
     }).not.toThrow();
     expect(s.active).toBe(true);
     expect(Number.isFinite(s.window_minutes)).toBe(true);
