@@ -40,6 +40,8 @@ export function makeSnapshotSampler(client: DahuaHttpClient) {
       const buf = Buffer.from(await r.arrayBuffer());
       const n = seq++;
       const ext = ct.includes("jpeg") ? "jpg" : "bin";
+      const evtMs = new Date(evt.received_at).getTime();
+      const deltaMs = Number.isFinite(evtMs) ? Date.now() - evtMs : null;
       const meta: ProbeSampleMeta = {
         source: "snapshot",
         seq: n,
@@ -47,7 +49,7 @@ export function makeSnapshotSampler(client: DahuaHttpClient) {
         event_code: evt.code ?? null,
         event_ts: evt.received_at,
         captured_ts: new Date().toISOString(),
-        delta_ms: Date.now() - new Date(evt.received_at).getTime(),
+        delta_ms: deltaMs,
         content_type: ct,
         http_status: r.status,
         byte_len: buf.length,

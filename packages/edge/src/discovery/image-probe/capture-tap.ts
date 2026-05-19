@@ -6,6 +6,7 @@ import { activeSampleDir, isProbeActive, noteSample } from "./state.js";
 import { parseMultipartPartsRaw } from "./raw-multipart.js";
 
 const MAX_QUEUE = 64;
+const MAX_PENDING_BYTES = 8 * 1024 * 1024; // 8MB defensive cap
 
 export interface CaptureTap {
   (chunk: Buffer, boundary: string): void;
@@ -17,6 +18,7 @@ export function makeCaptureTap(): CaptureTap {
   let inFlight = 0;
   let dropped = 0;
   let warnedDrop = false;
+  let warnedPending = false;
 
   return function tap(chunk: Buffer, boundary: string): void {
     try {
@@ -27,6 +29,18 @@ export function makeCaptureTap(): CaptureTap {
       const dir = activeSampleDir();
       if (!dir) return;
       pending = Buffer.concat([pending, chunk]);
+      if (pending.length > MAX_PENDING_BYTES) {
+        const bytes = pending.length;
+        pending = Buffer.alloc(0);
+        if (!warnedPending) {
+          warnedPending = true;
+          logger.warn(
+            { bytes },
+            "image probe: pending buffer exceeded cap, resetting (boundary misconfigured?)",
+          );
+        }
+        return;
+      }
       const { parts, remainder } = parseMultipartPartsRaw(pending, boundary);
       pending = remainder;
       for (const p of parts) {
