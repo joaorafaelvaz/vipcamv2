@@ -28,3 +28,65 @@ export interface DiscoveryReport {
   recommended_ingest_channel: "http_attach_sse" | "polling" | "onvif" | "unknown";
   fork_decision_required: string[]; // ex: "câmera não entrega emoção — escolher entre 10.2(a) e 10.2(b) da spec"
 }
+
+// ---- Onda 6: camera image-source probe ----
+export type ProbeSampleSource = "event" | "snapshot";
+
+export interface ProbeSampleMeta {
+  source: ProbeSampleSource;
+  seq: number;
+  event_idx: number | null; // ingest event index correlated (snapshot/event)
+  event_code: string | null; // Dahua event code if known
+  event_ts: string | null; // ISO — when the correlated event was received
+  captured_ts: string; // ISO — when this image was captured
+  delta_ms: number | null; // snapshot only: captured_ts - event_ts
+  content_type: string;
+  http_status: number | null; // snapshot only
+  byte_len: number;
+  file: string; // relative filename within the run dir
+}
+
+export type ImageSourceConclusion =
+  | "a_event_embedded"
+  | "b_snapshot_cgi"
+  | "c_recommend_rtsp_followup"
+  | "d_infeasible"
+  | "inconclusive";
+
+export interface DetectFace {
+  bbox: [number, number, number, number]; // x,y,w,h px
+  det_score: number;
+}
+export interface DetectResult {
+  faces: DetectFace[];
+  width: number;
+  height: number;
+  infer_ms: number;
+}
+export interface SourceMetrics {
+  source: ProbeSampleSource;
+  samples: number;
+  with_image: number; // event: parts that were image/*; snapshot: http image responses
+  usable_face: number; // >=1 face det_score>=thr & bbox>=minPx
+  median_bbox_px: number | null;
+  median_infer_ms: number | null;
+  median_delta_ms: number | null; // snapshot only
+}
+export interface ImageSourceProbeReport {
+  generated_at: string;
+  run_id: string;
+  thresholds: {
+    min_event_image_rate: number;
+    min_face_rate: number;
+    min_det_score: number;
+    min_bbox_px: number;
+    min_snapshot_image_rate: number;
+    max_snapshot_delta_ms: number;
+    min_samples: number;
+  };
+  face_events_captured: number;
+  metrics: SourceMetrics[];
+  conclusion: ImageSourceConclusion;
+  evidence: string[];
+  failover_b_recommendation: string;
+}

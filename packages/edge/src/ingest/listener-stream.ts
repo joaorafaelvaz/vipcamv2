@@ -21,6 +21,10 @@ export interface ConsumeStreamOptions {
   signal: AbortSignal;
   /** Override (testes): now() injetável. Default: () => new Date().toISOString(). */
   now?: () => string;
+  /** Onda 6: tap opcional injetado p/ o image-probe. Recebe os bytes crus
+   *  do chunk + boundary ANTES do parse string. Exceções são engolidas —
+   *  nunca quebram o ingest. Ausente = comportamento idêntico ao anterior. */
+  probeTap?: (chunk: Buffer, boundary: string) => void;
 }
 
 /**
@@ -44,7 +48,17 @@ export async function consumeStream(opts: ConsumeStreamOptions): Promise<number>
     while (!opts.signal.aborted) {
       const { done, value } = await opts.reader.read();
       if (done) break;
-      if (value) pending = Buffer.concat([pending, Buffer.from(value)]);
+      if (value) {
+        const chunkBuf = Buffer.from(value);
+        pending = Buffer.concat([pending, chunkBuf]);
+        if (opts.probeTap) {
+          try {
+            opts.probeTap(chunkBuf, opts.boundary);
+          } catch {
+            /* probe é best-effort — nunca quebra o ingest */
+          }
+        }
+      }
 
       const { events, remainder } = parseMultipartChunks(pending, opts.boundary);
       pending = remainder;

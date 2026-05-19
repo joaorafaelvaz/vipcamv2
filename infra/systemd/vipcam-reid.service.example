@@ -14,9 +14,14 @@ User=vipcam
 Group=vipcam
 WorkingDirectory=/opt/vipcamv2/packages/reid
 EnvironmentFile=-/etc/vipcam/reid.env
-# uv resolvido via PATH; ajustar se instalado em outro local
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/vipcam/.local/bin
-ExecStart=/home/vipcam/.local/bin/uv run uvicorn src.main:app --host 127.0.0.1 --port 5005
+# uv resolvido via PATH; ajustar se instalado em outro local.
+# HOME = /var/lib/vipcam (movido na Onda 4 D3). INSIGHTFACE_HOME aponta p/
+# dentro de ReadWritePaths (default ~/.insightface é bloqueado por
+# ProtectHome=read-only).
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/var/lib/vipcam/.local/bin
+Environment=HOME=/var/lib/vipcam
+Environment=INSIGHTFACE_HOME=/var/lib/vipcam/.insightface
+ExecStart=/var/lib/vipcam/.local/bin/uv run uvicorn src.main:app --host 127.0.0.1 --port 5005
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
@@ -29,7 +34,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/log/vipcam /opt/vipcamv2/packages/reid/.venv /opt/vipcamv2/snapshots
+ReadWritePaths=/var/log/vipcam /opt/vipcamv2/packages/reid/.venv /var/lib/vipcam
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]

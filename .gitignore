@@ -11,3 +11,4 @@ discovery-output/
 packages/reid/.venv/
 packages/reid/**/__pycache__/
 *.pyc
+.claude/
