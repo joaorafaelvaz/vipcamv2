@@ -10,6 +10,12 @@ import { processEvent } from "./pipeline.js";
 // Onda 6: tap de captura compartilhado (criado uma vez; no-op quando probe inativo).
 const captureTap = makeCaptureTap();
 
+// Onda 6: sampler de snapshot — singleton lazy (criado uma vez no 1º runOnce).
+// Mesma lifetime do captureTap: `seq` monotônico sobrevive a reconexões,
+// senão snap-0.* de uma reconexão sobrescreveria amostras da conexão anterior
+// dentro da mesma run do probe.
+let snapshotSampler: ReturnType<typeof makeSnapshotSampler> | null = null;
+
 const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
 
 export interface ListenerHandle {
@@ -72,7 +78,8 @@ async function runOnce(
   const boundaryMatch = ct.match(/boundary=([^;]+)/i);
   const boundary = boundaryMatch?.[1] ? `--${boundaryMatch[1]}` : "--myboundary";
 
-  const snapshotSampler = makeSnapshotSampler(client);
+  if (snapshotSampler === null) snapshotSampler = makeSnapshotSampler(client);
+  const sampler = snapshotSampler;
 
   await consumeStream({
     reader: response.body.getReader(),
@@ -85,7 +92,7 @@ async function runOnce(
       void processEvent(captured, camera.id);
       if (isProbeActive() && captured.parsed) {
         const parsed = captured.parsed;
-        void snapshotSampler({
+        void sampler({
           idx: captured.index,
           ...(parsed.code !== undefined ? { code: parsed.code } : {}),
           ...(parsed.data !== undefined ? { data: parsed.data } : {}),
