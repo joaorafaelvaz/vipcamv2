@@ -52,3 +52,41 @@ export type ImageSourceConclusion =
   | "c_recommend_rtsp_followup"
   | "d_infeasible"
   | "inconclusive";
+
+export interface DetectFace {
+  bbox: [number, number, number, number]; // x,y,w,h px
+  det_score: number;
+}
+export interface DetectResult {
+  faces: DetectFace[];
+  width: number;
+  height: number;
+  infer_ms: number;
+}
+export interface SourceMetrics {
+  source: ProbeSampleSource;
+  samples: number;
+  with_image: number; // event: parts that were image/*; snapshot: http image responses
+  usable_face: number; // >=1 face det_score>=thr & bbox>=minPx
+  median_bbox_px: number | null;
+  median_infer_ms: number | null;
+  median_delta_ms: number | null; // snapshot only
+}
+export interface ImageSourceProbeReport {
+  generated_at: string;
+  run_id: string;
+  thresholds: {
+    min_event_image_rate: number;
+    min_face_rate: number;
+    min_det_score: number;
+    min_bbox_px: number;
+    min_snapshot_image_rate: number;
+    max_snapshot_delta_ms: number;
+    min_samples: number;
+  };
+  face_events_captured: number;
+  metrics: SourceMetrics[];
+  conclusion: ImageSourceConclusion;
+  evidence: string[];
+  failover_b_recommendation: string;
+}
