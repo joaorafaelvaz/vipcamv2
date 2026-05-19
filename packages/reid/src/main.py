@@ -4,7 +4,6 @@
 detectadas (bbox px na imagem nativa + det_score) e infer_ms. /health mantido.
 """
 import io
-import os
 import time
 
 import numpy as np
@@ -54,9 +53,18 @@ async def health() -> HealthResponse:
 @app.post("/detect", response_model=DetectResponse)
 async def detect(file: UploadFile = File(...)) -> DetectResponse:
     raw = await file.read()
-    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except OSError:
+        # Body não-decodável (ex: o probe capturou um 401/HTML como amostra
+        # .bin). Contrato com o aggregator da Onda 6: responder 200 vazio
+        # (faces=[], dims 0) → ele classifica naturalmente como "sem imagem
+        # utilizável", sem precisar tratar erro de transporte por amostra.
+        return DetectResponse(faces=[], width=0, height=0, infer_ms=0)
     w, h = img.size
-    arr = np.asarray(img)[:, :, ::-1]  # RGB->BGR p/ InsightFace
+    # ascontiguousarray: [:, :, ::-1] gera view com stride negativo não-
+    # contíguo; alguns paths cv2/onnxruntime assumem buffer contíguo.
+    arr = np.ascontiguousarray(np.asarray(img)[:, :, ::-1])  # RGB->BGR p/ InsightFace
     t0 = time.monotonic()
     faces = _model().get(arr)
     infer_ms = int((time.monotonic() - t0) * 1000)
