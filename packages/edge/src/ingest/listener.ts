@@ -1,8 +1,14 @@
+import { makeCaptureTap } from "../discovery/image-probe/capture-tap.js";
+import { makeSnapshotSampler } from "../discovery/image-probe/snapshot-sampler.js";
+import { isProbeActive } from "../discovery/image-probe/state.js";
 import { logger } from "../obs/logger.js";
 import type { Camera } from "../persistence/schema/cameras.js";
 import type { DahuaHttpClient } from "./dahua-http-client.js";
 import { consumeStream } from "./listener-stream.js";
 import { processEvent } from "./pipeline.js";
+
+// Onda 6: tap de captura compartilhado (criado uma vez; no-op quando probe inativo).
+const captureTap = makeCaptureTap();
 
 const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
 
@@ -66,13 +72,26 @@ async function runOnce(
   const boundaryMatch = ct.match(/boundary=([^;]+)/i);
   const boundary = boundaryMatch?.[1] ? `--${boundaryMatch[1]}` : "--myboundary";
 
+  const snapshotSampler = makeSnapshotSampler(client);
+
   await consumeStream({
     reader: response.body.getReader(),
     boundary,
     signal: abortCtrl.signal,
+    // probeTap resolvido uma vez por conexão (toggle aplica em segundos via reconnect).
+    ...(isProbeActive() ? { probeTap: captureTap } : {}),
     // Fire-and-forget — pipeline não pode bloquear leitura do socket
     onEvent: (captured) => {
       void processEvent(captured, camera.id);
+      if (isProbeActive() && captured.parsed) {
+        const parsed = captured.parsed;
+        void snapshotSampler({
+          idx: captured.index,
+          ...(parsed.code !== undefined ? { code: parsed.code } : {}),
+          ...(parsed.data !== undefined ? { data: parsed.data } : {}),
+          received_at: captured.received_at,
+        });
+      }
     },
   });
 }
