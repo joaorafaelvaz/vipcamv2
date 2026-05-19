@@ -28,3 +28,27 @@ export interface DiscoveryReport {
   recommended_ingest_channel: "http_attach_sse" | "polling" | "onvif" | "unknown";
   fork_decision_required: string[]; // ex: "câmera não entrega emoção — escolher entre 10.2(a) e 10.2(b) da spec"
 }
+
+// ---- Onda 6: camera image-source probe ----
+export type ProbeSampleSource = "event" | "snapshot";
+
+export interface ProbeSampleMeta {
+  source: ProbeSampleSource;
+  seq: number;
+  event_idx: number | null; // ingest event index correlated (snapshot/event)
+  event_code: string | null; // Dahua event code if known
+  event_ts: string | null; // ISO — when the correlated event was received
+  captured_ts: string; // ISO — when this image was captured
+  delta_ms: number | null; // snapshot only: captured_ts - event_ts
+  content_type: string;
+  http_status: number | null; // snapshot only
+  byte_len: number;
+  file: string; // relative filename within the run dir
+}
+
+export type ImageSourceConclusion =
+  | "a_event_embedded"
+  | "b_snapshot_cgi"
+  | "c_recommend_rtsp_followup"
+  | "d_infeasible"
+  | "inconclusive";
