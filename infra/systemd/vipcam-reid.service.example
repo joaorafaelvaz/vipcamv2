@@ -14,14 +14,16 @@ User=vipcam
 Group=vipcam
 WorkingDirectory=/opt/vipcamv2/packages/reid
 EnvironmentFile=-/etc/vipcam/reid.env
-# uv resolvido via PATH; ajustar se instalado em outro local.
-# HOME = /var/lib/vipcam (movido na Onda 4 D3). INSIGHTFACE_HOME aponta p/
-# dentro de ReadWritePaths (default ~/.insightface é bloqueado por
-# ProtectHome=read-only).
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:/var/lib/vipcam/.local/bin
+# uv é vendorizado em /usr/local/bin/uv (mesma estratégia do bun no
+# install.sh — uv instalado por-usuário em /root/.local não é acessível
+# pro service user 'vipcam' com ProtectHome=read-only).
+# HOME = /var/lib/vipcam (movido na Onda 4 D3); InsightFace usa
+# $HOME/.insightface p/ o cache do modelo (empírico: ignora INSIGHTFACE_HOME).
+# /var/lib/vipcam está em ReadWritePaths.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/var/lib/vipcam
 Environment=INSIGHTFACE_HOME=/var/lib/vipcam/.insightface
-ExecStart=/var/lib/vipcam/.local/bin/uv run uvicorn src.main:app --host 127.0.0.1 --port 5005
+ExecStart=/usr/local/bin/uv run uvicorn src.main:app --host 127.0.0.1 --port 5005
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
