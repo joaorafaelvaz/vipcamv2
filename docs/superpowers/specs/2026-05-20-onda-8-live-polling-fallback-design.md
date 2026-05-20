@@ -64,12 +64,12 @@
 
 2. **`packages/edge/src/api/routes/events.ts` (reescrito)** — `createEventsRoutes(deps)` agora expõe **só** `GET /recent`:
    - Valida `?limit` (number, 1..200, default 50); inválido → 400 `{ error: "limit must be 1..200" }`.
-   - Chama `deps.recent(limit)` → retorna `LiveDetectionEvent[]`.
+   - Chama `deps.recent(limit)` → retorna `LiveDetectionEvent[]` (envelope `{type:"detection", detection, person}` **por item**; NÃO `DetectionThumbnail[]` — preserva paridade com o payload SSE que o `live-feed.tsx` já consome).
    - Interface: `EventsDeps { recent: (limit: number) => Promise<LiveDetectionEvent[]> }`.
-   - **Remove:** `subscribe`/`heartbeatMs` da `EventsDeps`; o handler `r.get("/stream", streamSSE(...))`.
+   - **Remove:** `subscribe`/`heartbeatMs` da `EventsDeps`; o handler `r.get("/stream", streamSSE(...))`. JSDoc do arquivo (linhas atuais ~15-25 falam de SSE/heartbeat/`allowQueryOn`) **substituir** no rewrite.
 
 3. **`packages/edge/src/api/server.ts`** — wiring:
-   - **Remove** `allowQueryOn: "/api/events/stream"` da config do `apiKeyMiddleware` (sem mais EventSource; GET de polling usa X-API-Key em header via `apiFetch`).
+   - **Remove** `allowQueryOn: "/api/events/stream"` da config do `apiKeyMiddleware` (sem mais EventSource; GET de polling usa X-API-Key em header via `apiFetch`, que injeta o header automaticamente). Note: `apiKeyMiddleware(env.API_KEY)` sem objeto de opções é válido (`ApiKeyMiddlewareOptions = {}` default).
    - `app.route("/api/events", createEventsRoutes({ recent: (limit) => recentDetections(getDb(), limit) }));`.
    - `/api/events/*` segue protegido por `requireKey`.
 
@@ -156,7 +156,7 @@ Sem testes E2E (continua fora de escopo per Onda 3 §11).
 
 1. `deploy.sh` no VPS (git pull + bun build + restart edge/web — zero apt/nginx).
 2. `curl -H "X-API-Key: $KEY" https://monitoramento.franquiabv.com.br/api/events/recent?limit=10` → JSON array com até 10 detecções recentes.
-3. `curl -i ".../api/events/stream?api_key=$KEY"` → **404** (rota removida — corte limpo confirmado).
+3. `curl -i ".../api/events/stream?api_key=$KEY"` → **404** (rota removida — corte limpo confirmado; Hono `app.notFound` retorna JSON 404). Op-note: qualquer EventSource cacheado em browser de cliente já aberto continuará silenciosamente em retry-loop até o tab ser fechado — o badge "ao vivo" volta a piscar quando o cliente refaz o load da página `/live`; sem error toast esperado.
 4. Browser `/live`: cards aparecem dentro de ≤5 s da próxima detecção; badge "atualizando" pisca a cada poll; pausar/retomar funciona; visibilidade da aba pausa polling.
 5. `tail -f /var/log/nginx/vipcam.error.log` — **sem novas** linhas `upstream prematurely closed ... /api/events/stream`.
 
