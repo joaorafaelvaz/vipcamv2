@@ -235,10 +235,7 @@ export function createServer() {
   // Onda 8: /live via polling DB-backed (SSE removido — inconsertável no
   // nginx HTTP/2 deste setup; ver spec da Onda 8). event-bus + publish()
   // no ingest seguem dormentes, sem consumer.
-  app.route(
-    "/api/events",
-    createEventsRoutes({ recent: (limit) => recentDetections(limit) }),
-  );
+  app.route("/api/events", createEventsRoutes({ recent: (limit) => recentDetections(limit) }));
 
   // Onda 3 Task 3.2.6: snapshots públicos (nginx restringe LAN).
   // Filename já é validado pela rota (regex anti-traversal); path.join é seguro.

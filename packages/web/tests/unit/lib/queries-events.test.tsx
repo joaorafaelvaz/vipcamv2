@@ -12,8 +12,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
-import * as React from "react";
 import type { LiveDetectionEvent } from "@vipcam/shared";
+import * as React from "react";
 
 // Mock apiFetch BEFORE importing the hook.
 let fetchCalls = 0;
@@ -60,9 +60,20 @@ afterEach(() => {
 describe("useRecentDetections", () => {
   test("initial fetch + renders array length", async () => {
     returnRows = [
-      { type: "detection", detection: { id: "a", detected_at: "t", snapshot_path: null,
-        face_attrs: {}, dominant_emotion: null, emotion_confidence: null,
-        session_id: null, camera_id: "c" }, person: null },
+      {
+        type: "detection",
+        detection: {
+          id: "a",
+          detected_at: "t",
+          snapshot_path: null,
+          face_attrs: {},
+          dominant_emotion: null,
+          emotion_confidence: null,
+          session_id: null,
+          camera_id: "c",
+        },
+        person: null,
+      },
     ];
     const qc = makeClient();
     render(

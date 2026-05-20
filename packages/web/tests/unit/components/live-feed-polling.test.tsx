@@ -1,8 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
-import * as React from "react";
 import type { LiveDetectionEvent } from "@vipcam/shared";
+import type * as React from "react";
 
 // Mock api-client BEFORE importing LiveFeed (componente novo não importa
 // mais getClientEnv — apiFetch internaliza isso).
@@ -48,9 +48,20 @@ describe("LiveFeed (polling)", () => {
 
   test("renders detection cards from hook data", () => {
     hookState.data = [
-      { type: "detection", detection: { id: "d1", detected_at: "2026-05-20T15:00:00Z",
-        snapshot_path: null, face_attrs: {}, dominant_emotion: "happy",
-        emotion_confidence: 0.9, session_id: null, camera_id: "c" }, person: null },
+      {
+        type: "detection",
+        detection: {
+          id: "d1",
+          detected_at: "2026-05-20T15:00:00Z",
+          snapshot_path: null,
+          face_attrs: {},
+          dominant_emotion: "happy",
+          emotion_confidence: 0.9,
+          session_id: null,
+          camera_id: "c",
+        },
+        person: null,
+      },
     ];
     render(wrap(<LiveFeed />));
     // Não asseguramos detalhes internos do DetectionCard; só o badge de contagem.

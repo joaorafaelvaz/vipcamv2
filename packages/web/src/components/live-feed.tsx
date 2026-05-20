@@ -24,11 +24,7 @@ export function LiveFeed() {
       : query.isFetching
         ? "atualizando"
         : "ao vivo";
-  const labelColor = paused
-    ? "text-slate-500"
-    : query.isError
-      ? "text-red-600"
-      : "text-green-600";
+  const labelColor = paused ? "text-slate-500" : query.isError ? "text-red-600" : "text-green-600";
 
   return (
     <div className="space-y-3">
@@ -57,9 +53,7 @@ export function LiveFeed() {
           </div>
         ) : (
           // key = detection.id — único por detection; estável entre polls.
-          events.map((e, i) => (
-            <DetectionCard key={e.detection.id} event={e} fresh={i === 0} />
-          ))
+          events.map((e, i) => <DetectionCard key={e.detection.id} event={e} fresh={i === 0} />)
         )}
       </div>
     </div>
