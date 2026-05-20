@@ -1,65 +1,36 @@
 import type { LiveDetectionEvent } from "@vipcam/shared";
 import { Hono } from "hono";
-import { streamSSE } from "hono/streaming";
 
 export interface EventsDeps {
-  /**
-   * Subscribe pro bus de eventos. Retorna função pra unsubscribe.
-   * Em produção: `eventBus.subscribe`. Em test: mock.
-   */
-  subscribe: (handler: (event: LiveDetectionEvent) => void) => () => void;
-  /** Intervalo do heartbeat em ms. Default 15s. */
-  heartbeatMs?: number;
+  /** Últimas N detecções enriquecidas, em ordem DESC por detected_at. */
+  recent: (limit: number) => Promise<LiveDetectionEvent[]>;
 }
 
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
+
 /**
- * Endpoint SSE pra Live feed (Onda 3 Task 3.2.4).
+ * Endpoints REST do /live (Onda 8 — polling-only).
  *
- * GET /stream?api_key=KEY  → text/event-stream
- *
- * Auth via apiKeyMiddleware.allowQueryOn (browser EventSource não passa
- * headers, então aceita key no query param SOMENTE neste path).
- *
- * Heartbeat 15s evita timeout de proxy nginx (default 60s) e detecta
- * clientes mortos via half-close.
+ * GET /recent?limit=N  →  LiveDetectionEvent[]  (envelope por item, DESC por
+ * detected_at, default 50, cap 200). Substitui o antigo /stream (SSE) que
+ * era inconsertável sob nginx HTTP/2 (ver onda 8 spec §2 e relatório
+ * 2026-05-19/20). Auth via apiKeyMiddleware aplicado em /api/events/* no
+ * server.ts (header X-API-Key normal — sem allowQueryOn).
  */
 export function createEventsRoutes(deps: EventsDeps): Hono {
   const r = new Hono();
-  const heartbeatMs = deps.heartbeatMs ?? 15_000;
-
-  r.get("/stream", (c) => {
-    return streamSSE(c, async (stream) => {
-      // Flush inicial OBRIGATÓRIO: sob Bun, o Hono streamSSE só fecha o
-      // bloco de headers (\r\n\r\n) e estabelece a resposta no PRIMEIRO
-      // write. Num feed quieto o 1º write só viria no heartbeat (15s);
-      // até lá o nginx fica preso "reading response header" e devolve
-      // 502 antes (confirmado via tcpdump: upstream manda 99 bytes de
-      // headers sem o terminador). Um ping imediato força headers +
-      // 1º byte na conexão, destravando o proxy.
-      await stream.writeSSE({ event: "ping", data: "" });
-
-      // writeSSE retorna Promise mas não awaitamos (lossy mas OK pra
-      // ambient feed; rate baixo: 10-30/min em pico).
-      const unsubscribe = deps.subscribe((event) => {
-        void stream.writeSSE({ data: JSON.stringify(event) });
-      });
-
-      // Heartbeat — também detecta cliente desconectado quando writeSSE
-      // throw em conexão fechada
-      const heartbeat = setInterval(() => {
-        void stream.writeSSE({ event: "ping", data: "" });
-      }, heartbeatMs);
-
-      // Cleanup on abort
-      stream.onAbort(() => {
-        clearInterval(heartbeat);
-        unsubscribe();
-      });
-
-      // Mantém o handler vivo até o cliente desconectar
-      await new Promise<void>(() => {});
-    });
+  r.get("/recent", async (c) => {
+    const raw = c.req.query("limit");
+    let limit: number = DEFAULT_LIMIT;
+    if (raw !== undefined) {
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1 || n > MAX_LIMIT) {
+        return c.json({ error: `limit must be 1..${MAX_LIMIT}` }, 400);
+      }
+      limit = n;
+    }
+    return c.json(await deps.recent(limit));
   });
-
   return r;
 }

@@ -28,7 +28,7 @@ import {
 } from "../persistence/repositories/index.js";
 import { erpCheckins, erpClients, erpEmployees } from "../persistence/schema/erp-cache.js";
 import { fetchDashboardSummary } from "./dashboard.queries.js";
-import { eventBus } from "./events/event-bus.js";
+import { recentDetections } from "./events.queries.js";
 import { listPendingEnriched } from "./match-pending.js";
 import { overviewMetrics } from "./metrics.queries.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
@@ -50,11 +50,9 @@ export function createServer() {
 
   // I3: protege rotas mutativas/sensíveis. /api/health fica anônimo
   // (usado por nginx/uptime monitoring).
-  // Onda 3 Task 3.2.6: allowQueryOn permite ?api_key= em /api/events/stream
-  // (EventSource browser não suporta headers customizados).
-  const requireKey = apiKeyMiddleware(env.API_KEY, {
-    allowQueryOn: "/api/events/stream",
-  });
+  // Onda 8: SSE substituído por polling — sem mais allowQueryOn.
+  // GET /api/events/recent usa X-API-Key em header (via apiFetch da web).
+  const requireKey = apiKeyMiddleware(env.API_KEY);
   app.use("/api/discovery/*", requireKey);
   app.use("/api/erp/*", requireKey);
   app.use("/api/matches/*", requireKey);
@@ -234,13 +232,10 @@ export function createServer() {
     }),
   );
 
-  // Onda 3 Task 3.2.6: SSE pro live feed
-  app.route(
-    "/api/events",
-    createEventsRoutes({
-      subscribe: (handler) => eventBus.subscribe(handler),
-    }),
-  );
+  // Onda 8: /live via polling DB-backed (SSE removido — inconsertável no
+  // nginx HTTP/2 deste setup; ver spec da Onda 8). event-bus + publish()
+  // no ingest seguem dormentes, sem consumer.
+  app.route("/api/events", createEventsRoutes({ recent: (limit) => recentDetections(limit) }));
 
   // Onda 3 Task 3.2.6: snapshots públicos (nginx restringe LAN).
   // Filename já é validado pela rota (regex anti-traversal); path.join é seguro.

@@ -1,109 +1,74 @@
 import { describe, expect, test } from "bun:test";
 import type { LiveDetectionEvent } from "@vipcam/shared";
-import { Hono } from "hono";
 import { createEventsRoutes } from "../../../../src/api/routes/events.js";
 
-/**
- * Tests do SSE são limitados pelo Hono.app.request() que retorna Response
- * direto sem reader real. Validamos: handshake (status + headers) + que
- * subscribe é registrado quando conexão abre.
- *
- * Lifecycle completo (abort → onAbort → unsubscribe) é testado manualmente
- * via curl no smoke test do Chunk 3.2.7.
- */
-describe("GET /api/events/stream", () => {
-  test("retorna 200 + headers SSE corretos", async () => {
-    const app = new Hono();
-    app.route(
-      "/api/events",
-      createEventsRoutes({
-        subscribe: () => () => {},
-        heartbeatMs: 100_000,
-      }),
-    );
-    const res = await app.request("/api/events/stream");
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/event-stream");
-    expect(res.headers.get("cache-control")).toBe("no-cache");
+const fakeEvent: LiveDetectionEvent = {
+  type: "detection",
+  detection: {
+    id: "00000000-0000-0000-0000-000000000001",
+    detected_at: "2026-05-20T15:00:00Z",
+    snapshot_path: null,
+    face_attrs: {},
+    dominant_emotion: null,
+    emotion_confidence: null,
+    session_id: null,
+    camera_id: "00000000-0000-0000-0000-000000000099",
+  },
+  person: null,
+};
+
+function app(recent: (limit: number) => Promise<LiveDetectionEvent[]>) {
+  return createEventsRoutes({ recent });
+}
+
+describe("createEventsRoutes GET /recent", () => {
+  test("default limit=50 honored, calls deps.recent, returns array", async () => {
+    let received: number | undefined;
+    const r = await app(async (limit) => {
+      received = limit;
+      return [fakeEvent];
+    }).request("/recent");
+    expect(r.status).toBe(200);
+    expect(received).toBe(50);
+    expect(await r.json()).toEqual([fakeEvent]);
   });
 
-  test("emite ping inicial imediatamente (flush de headers p/ proxy)", async () => {
-    const app = new Hono();
-    app.route(
-      "/api/events",
-      createEventsRoutes({
-        subscribe: () => () => {},
-        heartbeatMs: 100_000, // heartbeat longe — só o flush inicial pode emitir
-      }),
-    );
-    const res = await app.request("/api/events/stream");
-    const reader = res.body?.getReader();
-    expect(reader).toBeDefined();
-    const { value } = await reader!.read();
-    const chunk = new TextDecoder().decode(value);
-    // primeiro byte chega já no connect (sem esperar heartbeat de 100s)
-    expect(chunk).toContain("event: ping");
-    await reader!.cancel();
+  test("limit=1 boundary OK", async () => {
+    let received: number | undefined;
+    const r = await app(async (l) => {
+      received = l;
+      return [];
+    }).request("/recent?limit=1");
+    expect(r.status).toBe(200);
+    expect(received).toBe(1);
   });
 
-  test("registra subscriber assim que conexão abre", async () => {
-    let subscribed = 0;
-    const app = new Hono();
-    app.route(
-      "/api/events",
-      createEventsRoutes({
-        subscribe: (_handler) => {
-          subscribed += 1;
-          return () => {};
-        },
-        heartbeatMs: 100_000,
-      }),
-    );
-
-    // Abre conexão e cancela imediatamente o body reader pra liberar
-    const res = await app.request("/api/events/stream");
-    await new Promise((r) => setTimeout(r, 30));
-    await res.body?.cancel();
-
-    expect(subscribed).toBe(1);
+  test("limit=200 boundary OK", async () => {
+    let received: number | undefined;
+    const r = await app(async (l) => {
+      received = l;
+      return [];
+    }).request("/recent?limit=200");
+    expect(r.status).toBe(200);
+    expect(received).toBe(200);
   });
 
-  test("eventos publicados pelo bus são empurrados via writeSSE sem throw", async () => {
-    let captured: ((e: LiveDetectionEvent) => void) | null = null;
-    const app = new Hono();
-    app.route(
-      "/api/events",
-      createEventsRoutes({
-        subscribe: (handler) => {
-          captured = handler;
-          return () => {};
-        },
-        heartbeatMs: 100_000,
-      }),
-    );
+  test.each([
+    ["0", 400],
+    ["201", 400],
+    ["-5", 400],
+    ["abc", 400],
+    ["1.5", 400],
+  ])("invalid limit=%s → %d", async (raw, expectedStatus) => {
+    const r = await app(async () => []).request(`/recent?limit=${raw}`);
+    expect(r.status).toBe(expectedStatus);
+    const body = (await r.json()) as { error?: string };
+    expect(body.error).toContain("limit");
+  });
 
-    const res = await app.request("/api/events/stream");
-    await new Promise((r) => setTimeout(r, 30));
-
-    expect(captured).not.toBeNull();
-    // Publish — não throwa, mesmo sem reader real (lossy aceitável)
-    expect(() =>
-      captured?.({
-        type: "detection",
-        detection: {
-          id: "00000000-0000-0000-0000-000000000001",
-          detected_at: "2026-05-14T13:00:00Z",
-          snapshot_path: null,
-          face_attrs: {},
-          dominant_emotion: null,
-          emotion_confidence: null,
-          session_id: null,
-          camera_id: "00000000-0000-0000-0000-000000000099",
-        },
-        person: null,
-      }),
-    ).not.toThrow();
-
-    await res.body?.cancel();
+  test("returns [] when deps.recent returns []", async () => {
+    const r = await app(async () => []).request("/recent");
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual([]);
   });
 });
