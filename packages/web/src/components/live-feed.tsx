@@ -2,37 +2,39 @@
 
 import { DetectionCard } from "@/components/detection-card";
 import { Button } from "@/components/ui/button";
-import { useSse } from "@/hooks/use-sse";
-import { getClientEnv } from "@/lib/env";
-import type { LiveDetectionEvent } from "@vipcam/shared";
-import { useCallback, useRef, useState } from "react";
+import { useRecentDetections } from "@/lib/queries/events";
+import { useState } from "react";
 
-const MAX_EVENTS = 50;
+const POLL_INTERVAL_MS = 3000;
+const LIMIT = 50;
 
 export function LiveFeed() {
-  const env = getClientEnv();
-  const url = `${env.NEXT_PUBLIC_API_URL}/api/events/stream?api_key=${encodeURIComponent(
-    env.NEXT_PUBLIC_API_KEY,
-  )}`;
-  const [events, setEvents] = useState<LiveDetectionEvent[]>([]);
   const [paused, setPaused] = useState(false);
-  const pausedRef = useRef(false);
-  pausedRef.current = paused;
+  const query = useRecentDetections({
+    limit: LIMIT,
+    intervalMs: POLL_INTERVAL_MS,
+    enabled: !paused,
+  });
 
-  const onMessage = useCallback((data: LiveDetectionEvent) => {
-    if (pausedRef.current) return;
-    if (data.type !== "detection") return;
-    setEvents((prev) => [data, ...prev].slice(0, MAX_EVENTS));
-  }, []);
-
-  const { state } = useSse<LiveDetectionEvent>({ url, onMessage });
+  const events = query.data ?? [];
+  const label = paused
+    ? "pausado"
+    : query.isError
+      ? "erro"
+      : query.isFetching
+        ? "atualizando"
+        : "ao vivo";
+  const labelColor = paused
+    ? "text-slate-500"
+    : query.isError
+      ? "text-red-600"
+      : "text-green-600";
 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3 bg-white border rounded-md p-3">
         <div className="text-sm">
-          <span className={state === "open" ? "text-green-600" : "text-red-600"}>●</span>{" "}
-          {state === "open" ? "conectado" : state}
+          <span className={labelColor}>●</span> {label}
         </div>
         <div className="text-sm text-slate-500">
           {events.length} detec{events.length === 1 ? "ção" : "ções"} no buffer
@@ -54,10 +56,8 @@ export function LiveFeed() {
             Aguardando primeira detecção…
           </div>
         ) : (
+          // key = detection.id — único por detection; estável entre polls.
           events.map((e, i) => (
-            // M2: key = detection.id (UUID único por detection). Antes usava
-            // index — no ring buffer (prepend) os índices deslocam a cada
-            // evento, forçando re-render completo da lista a cada tick.
             <DetectionCard key={e.detection.id} event={e} fresh={i === 0} />
           ))
         )}
