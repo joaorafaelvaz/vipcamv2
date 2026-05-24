@@ -254,18 +254,25 @@ Voting top-K fica adiável (top-1 é suficiente pra começar; se falsos positivo
 
 ## 5. Person bootstrap + ERP linkage
 
-### 5.1 Conflito reid vs match temporal → sempre ambiguous
+### 5.1 Conflito reid vs match temporal → sempre ambiguous (Onda 7.1 — deferida)
 Match temporal (orchestrator existente da Onda 2/3) continua rodando em background após cada checkin ERP novo. Quando vê detection candidata na janela ±5min:
 
-| `detection.person_id` | Sugestão ERP | Ação |
-|---|---|---|
-| `NULL` | 1 cliente | Comportamento atual: auto-match |
-| `NULL` | 2+ clientes | Comportamento atual: ambiguous |
-| `= cliente do ERP` | mesmo cliente | NO-OP |
-| `= cliente X` (anônimo) | cliente Y | **AMBIGUOUS** — humano decide merge X→Y ou reject |
-| `= cliente W` (já cliente) | cliente Y | **AMBIGUOUS** — reid pode estar errado |
+| `detection.person_id` | Sugestão ERP | Ação | Status na Onda 7 |
+|---|---|---|---|
+| `NULL` | 1 cliente | Comportamento atual: auto-match | ✓ Já funciona |
+| `NULL` | 2+ clientes | Comportamento atual: ambiguous | ✓ Já funciona |
+| `= cliente do ERP` | mesmo cliente | NO-OP | ⏳ Deferida (Onda 7.1) |
+| `= cliente X` (anônimo) | cliente Y | **AMBIGUOUS** — humano decide merge X→Y ou reject | ⏳ Deferida (Onda 7.1) |
+| `= cliente W` (já cliente) | cliente Y | **AMBIGUOUS** — reid pode estar errado | ⏳ Deferida (Onda 7.1) |
 
-Nunca auto-link silencioso quando há divergência. Tabela usada: a já-existente `match_attempts` (temporal), porque a sugestão é de checkin → continua semanticamente correta.
+**Onda 7 entrega rows 1-2** (comportamento já existente da Onda 2 — match temporal pegando anonymous na janela). **Rows 3-5 deferidas pra Onda 7.1** porque exigem:
+1. Nova query `detectionsRepo.findInWindow(start, end)` que retorna detections com qualquer `person_id` (não só NULL), substituindo `findAnonymousInWindow` no orchestrator.
+2. Refactor de `processCheckin` pra iterar por detection (atualmente decide UMA decisão por window via `decideMatch`).
+3. UI temporal `/matches` ganha workflow novo "esta detection já tem person W, ERP sugere Y, humano confirma merge ou reject".
+
+**Risco de deferir:** se reid produzir false-positive matches em produção (linka detection ao person errado), o checkin ERP do person CERTO não cria ambiguous (porque findAnonymousInWindow não vê a detection — já tem person_id). Erro fica silencioso até alguém notar manualmente. **Mitigação:** janela de calibração de 7 dias (§8) monitora `strict matches contradicting ERP` — se taxa > 10%, dispara Onda 7.1.
+
+**Decisão de design:** Onda 7 entrega o caminho feliz (reid+ERP concordam, ou só um dos dois fala) e deixa o conflict-resolution como hardening de v2 quando dados reais informarem a frequência. Auto-link silencioso (sem revisão humana) só acontece se REID estiver SEMPRE certo — premissa que a calibração valida.
 
 ### 5.2 Person Merge transacional (hard merge)
 Quando humano resolve ambiguous "X é Y" no `/matches`:

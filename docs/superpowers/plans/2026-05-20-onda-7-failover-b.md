@@ -1830,12 +1830,20 @@ Estender `packages/edge/src/persistence/repositories/face-records.repo.ts` — a
    * eviction em dst se total > 5. Helper usado por personsRepo.mergeInto
    * (Onda 7 §5.2 step 2 + step 3).
    *
-   * Importante: NÃO faz lock próprio — assume que caller já está dentro de
-   * uma transação que locked persons.srcId e persons.dstId (via mergeInto).
-   * Se for chamado fora desse contexto, race condition é possível.
+   * Aceita um Drizzle transaction opcional (`tx`) pra rodar DENTRO de uma
+   * transação maior (caso típico: mergeInto). Quando `tx` ausente, usa o
+   * connection pool normal (getDb()) — útil pra ad-hoc fixups.
+   *
+   * Importante: quando rodando fora de transação, race condition é possível
+   * (entre UPDATE e DELETE outro insert pode mover o cap). Pra produção
+   * usar dentro do mergeInto.
    */
-  async transferToPerson(srcPersonId: string, dstPersonId: string): Promise<void> {
-    const db = getDb();
+  async transferToPerson(
+    srcPersonId: string,
+    dstPersonId: string,
+    tx?: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0],
+  ): Promise<void> {
+    const db = tx ?? getDb();
     await db.execute(sql`
       UPDATE face_records SET person_id = ${dstPersonId}
       WHERE person_id = ${srcPersonId}
@@ -3130,8 +3138,8 @@ git commit -m "feat(edge): Onda 7 — /api/health ganha checks.reid (sync ping, 
 
 Fecha o loop humano-no-loop: `personsRepo.mergeInto` transacional (§5.2), `reidMatchAttemptsRepo` ganha `findPendingEnriched` + `resolve`, e endpoints `GET /api/matches/reid/pending` + `POST /api/matches/reid/:id/resolve` (§5.3).
 
-**Tasks neste chunk:** 16-19
-**Sequenciamento:** 16 → 17 (resolve depende de mergeInto) → 18 → 19. Tudo edge-side; UI vem em Chunk 5.
+**Tasks neste chunk:** 16-18 (Task 19 deferida pra Onda 7.1 — ver bloco final)
+**Sequenciamento:** 16 → 17 (resolve depende de mergeInto) → 18. Tudo edge-side; UI vem em Chunk 5.
 
 ---
 
@@ -3256,7 +3264,11 @@ describe("personsRepo.mergeInto (Onda 7 §5.2)", () => {
 
 - [ ] **Step 3: Implement mergeInto + transferToPerson reuse**
 
-Em `packages/edge/src/persistence/repositories/persons.repo.ts`, append ao `personsRepo` object:
+Em `packages/edge/src/persistence/repositories/persons.repo.ts`, adicionar import:
+```typescript
+import { faceRecordsRepo } from "./face-records.repo.js";
+```
+(circular import risk: persons.repo já importa nada de face-records — ok). Append ao `personsRepo` object:
 ```typescript
   /**
    * Hard merge transacional (Onda 7 §5.2): src some, todas as refs migram pra
@@ -3286,21 +3298,13 @@ Em `packages/edge/src/persistence/repositories/persons.repo.ts`, append ao `pers
         throw new Error(`mergeInto: person not found (${srcId} or ${dstId})`);
       }
 
-      // 2. Migra refs (detections, sessions, face_records via helper)
+      // 2. Migra refs simples (detections, sessions)
       await tx.execute(sql`UPDATE detections SET person_id = ${dstId} WHERE person_id = ${srcId}`);
       await tx.execute(sql`UPDATE sessions   SET person_id = ${dstId} WHERE person_id = ${srcId}`);
-      await tx.execute(sql`UPDATE face_records SET person_id = ${dstId} WHERE person_id = ${srcId}`);
 
-      // 3. Eviction FIFO em dst após import (Top-K=5)
-      await tx.execute(sql`
-        DELETE FROM face_records
-        WHERE id IN (
-          SELECT id FROM face_records
-          WHERE person_id = ${dstId}
-          ORDER BY created_at DESC
-          OFFSET 5
-        )
-      `);
+      // 3. face_records: reusa helper tx-aware (Task 11) — UPDATE + FIFO eviction
+      // em dst após import (Top-K=5). DRY com insertAndEvict; mesma semântica.
+      await faceRecordsRepo.transferToPerson(srcId, dstId, tx);
 
       // 4. Rollup das estatísticas — regras invariantes Onda 7 §5.2:
       //    - last_seen_at  = GREATEST(recência)
@@ -3960,166 +3964,23 @@ git commit -m "feat(edge): Onda 7 — GET /api/matches/reid/pending + POST /:id/
 
 ---
 
-### Task 19: Match temporal — política de no-op vs ambiguous quando reid já decidiu
+### Task 19: DEFERIDA — match temporal reid-aware (§5.1 rows 3-5)
 
-**Spec ref:** §5.1 (table — match temporal vê detection.person_id, decide NO-OP ou cria ambiguous).
+**Status:** Removida desta onda. Spec §5.1 atualizado pra marcar rows 3-5 (conflito reid+ERP) como **Onda 7.1**.
 
-**Files:**
-- Modify: `packages/edge/src/match-temp/orchestrator.ts` (lógica do orchestrator existente)
-- Test: `packages/edge/tests/unit/match-temp/orchestrator-reid-aware.test.ts`
+**Razão da deferral:** implementação real exige:
+1. Nova query `detectionsRepo.findInWindow(start, end)` (atualmente só `findAnonymousInWindow` existe — exclui detections com `person_id != null`, ou seja, detections já identificadas por reid nunca aparecem na janela de checkin).
+2. Refactor de `processCheckin` pra iterar por detection (atualmente `decideMatch` retorna UMA decisão por window).
+3. Workflow novo na UI `/matches` aba temporal — "esta detection já tem person W, ERP sugere Y, humano confirma merge ou reject" — escopo de design + componentes que não cabem em Chunk 5 da Onda 7.
 
-> **Nota:** match temporal já existe (Onda 2-3). Esta task adapta a lógica pra não-criar ambiguous quando reid e ERP CONCORDAM, e criar ambiguous quando DIVERGEM. NÃO é re-escrita completa — só adiciona um branch.
+**Risco aceito durante calibração:** se reid produzir false-positive em produção (linka detection ao person errado), o checkin do person correto NÃO cria ambiguous (porque a detection já tem `person_id`, então `findAnonymousInWindow` não a retorna). Erro fica silencioso até notar manualmente.
 
-- [ ] **Step 1: Read existing orchestrator pra entender o pattern atual**
+**Mitigação:** §8 calibração — durante os primeiros 7 dias, monitorar `strict matches contradicting ERP > 10%` (operador revisa entradas reid e ERP do mesmo dia). Se gatilhar, Onda 7.1 implementa rows 3-5.
 
-```bash
-cat packages/edge/src/match-temp/orchestrator.ts | head -80
-```
-Observar: como decide auto-match vs ambiguous hoje (provavelmente: 1 candidato → auto, 2+ → ambiguous, 0 → no-op).
-
-- [ ] **Step 2: Failing test (4 cenários do §5.1 table)**
-
-`packages/edge/tests/unit/match-temp/orchestrator-reid-aware.test.ts`:
-```typescript
-import { beforeEach, describe, expect, mock, test } from "bun:test";
-
-// Mock repositories
-const mockData = {
-  detection: null as null | { id: string; person_id: string | null },
-  candidateClients: [] as Array<{ erp_id: string; person_id: string }>,
-  createdAmbiguous: [] as unknown[],
-  autoMatched: [] as Array<[string, string]>,
-};
-
-const installMocks = () => {
-  mock.module("../../../src/persistence/repositories/match-attempts.repo.js", () => ({
-    matchAttemptsRepo: {
-      createAmbiguous: async (data: unknown) => {
-        mockData.createdAmbiguous.push(data);
-        return { id: "ma-1" };
-      },
-      createAutoMatched: async (detId: string, checkin: string) => {
-        mockData.autoMatched.push([detId, checkin]);
-      },
-    },
-  }));
-  // Mock que findCandidateDetectionsForCheckin retorna a detection mockada
-  mock.module("../../../src/persistence/repositories/detections.repo.js", () => ({
-    detectionsRepo: {
-      findCandidatesInWindow: async () => (mockData.detection ? [mockData.detection] : []),
-    },
-  }));
-  mock.module("../../../src/persistence/repositories/persons.repo.js", () => ({
-    personsRepo: {
-      findByErpClientId: async (erpId: string) => {
-        const found = mockData.candidateClients.find((c) => c.erp_id === erpId);
-        return found ? { id: found.person_id, person_type: "client", erp_client_id: erpId } : null;
-      },
-    },
-  }));
-};
-installMocks();
-
-import { processCheckinAgainstDetections } from "../../../src/match-temp/orchestrator.js";
-
-beforeEach(() => {
-  mockData.detection = null;
-  mockData.candidateClients = [];
-  mockData.createdAmbiguous = [];
-  mockData.autoMatched = [];
-  installMocks();
-});
-
-const baseCheckin = {
-  erp_id: "checkin-1",
-  client_id: "cliente-erp-1",
-  occurred_at: new Date(),
-  event_type: "in" as const,
-};
-
-describe("processCheckinAgainstDetections — reid-aware branches (Onda 7 §5.1)", () => {
-  test("detection.person_id IS NULL + 1 candidate → comportamento atual (auto-match)", async () => {
-    mockData.detection = { id: "det-1", person_id: null };
-    mockData.candidateClients = [{ erp_id: "cliente-erp-1", person_id: "p-1" }];
-    await processCheckinAgainstDetections(baseCheckin);
-    expect(mockData.autoMatched).toEqual([["det-1", "checkin-1"]]);
-    expect(mockData.createdAmbiguous.length).toBe(0);
-  });
-
-  test("detection.person_id == cliente do checkin → NO-OP (já concordam)", async () => {
-    mockData.detection = { id: "det-2", person_id: "p-1" };
-    mockData.candidateClients = [{ erp_id: "cliente-erp-1", person_id: "p-1" }];
-    await processCheckinAgainstDetections(baseCheckin);
-    expect(mockData.autoMatched.length).toBe(0);
-    expect(mockData.createdAmbiguous.length).toBe(0);
-  });
-
-  test("detection.person_id == anônima X, checkin sugere cliente Y → ambiguous", async () => {
-    mockData.detection = { id: "det-3", person_id: "p-anon-X" };
-    mockData.candidateClients = [{ erp_id: "cliente-erp-1", person_id: "p-cliente-Y" }];
-    await processCheckinAgainstDetections(baseCheckin);
-    expect(mockData.createdAmbiguous.length).toBe(1);
-  });
-
-  test("detection.person_id == cliente W já-ligado, checkin sugere cliente Y → ambiguous (reid pode estar errado)", async () => {
-    mockData.detection = { id: "det-4", person_id: "p-cliente-W" };
-    mockData.candidateClients = [{ erp_id: "cliente-erp-1", person_id: "p-cliente-Y" }];
-    await processCheckinAgainstDetections(baseCheckin);
-    expect(mockData.createdAmbiguous.length).toBe(1);
-  });
-});
-```
-
-- [ ] **Step 3: Run test (fail — lógica nova não-implementada)**
-
-`bun --filter '@vipcam/edge' test tests/unit/match-temp/orchestrator-reid-aware.test.ts`
-
-- [ ] **Step 4: Modify orchestrator.ts**
-
-Localizar a função `processCheckinAgainstDetections` (ou nome equivalente — checar arquivo) e antes de criar ambiguous OU auto-match, adicionar branch:
-```typescript
-// Onda 7 §5.1: política reid-aware. Pra cada detection candidata na janela,
-// comparar detection.person_id com o cliente que o checkin sugere:
-// - NULL + 1 candidato → auto-match (comportamento atual)
-// - NULL + 2+ → ambiguous (comportamento atual)
-// - == sugerido → NO-OP (concordam, nada a fazer)
-// - != sugerido → AMBIGUOUS (divergem, humano decide via UI temporal)
-for (const det of candidates) {
-  const candidatePerson = await personsRepo.findByErpClientId(checkin.client_id);
-  if (det.person_id === null) {
-    if (candidates.length === 1 && candidatePerson) {
-      await matchAttemptsRepo.createAutoMatched(det.id, checkin.erp_id);
-    } else {
-      await matchAttemptsRepo.createAmbiguous({ detection_id: det.id, erp_checkin_id: checkin.erp_id });
-    }
-  } else if (candidatePerson && det.person_id === candidatePerson.id) {
-    // NO-OP — reid e ERP concordam
-    continue;
-  } else {
-    // Divergem — reid disse X, ERP sugere Y. Humano decide.
-    await matchAttemptsRepo.createAmbiguous({ detection_id: det.id, erp_checkin_id: checkin.erp_id });
-  }
-}
-```
-
-> **Importante:** o código exato depende do schema atual do orchestrator. **Não** rewrite tudo — só adicione/ajuste os branches. Se o orchestrator atual já fizer a parte do "NULL" branch, manter, e adicionar APENAS o branch "person_id não-null".
-
-- [ ] **Step 5: Run test (pass)**
-
-`bun --filter '@vipcam/edge' test tests/unit/match-temp/orchestrator-reid-aware.test.ts` → 4 PASS.
-
-- [ ] **Step 6: Run existing orchestrator/temporal tests pra confirmar não-regrediu**
-
-`bun --filter '@vipcam/edge' test tests/unit/match-temp/`
-Expected: tests existentes (Onda 2 + Onda 3) continuam verdes.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add packages/edge/src/match-temp/orchestrator.ts \
-        packages/edge/tests/unit/match-temp/orchestrator-reid-aware.test.ts
-git commit -m "feat(edge): Onda 7 — match-temp orchestrator vira reid-aware (NO-OP se concorda, ambiguous se diverge)"
-```
+**Onda 7.1 quando iniciar:**
+- Task 19a: `detectionsRepo.findInWindow` + DB-deferred test.
+- Task 19b: `processCheckin` refactor pra loop per-detection + 4 testes do §5.1 table.
+- Task 19c: UI workflow "divergent reid+ERP" na aba temporal `/matches`.
 
 ---
 
