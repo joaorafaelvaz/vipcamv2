@@ -3964,6 +3964,609 @@ git commit -m "feat(edge): Onda 7 — GET /api/matches/reid/pending + POST /:id/
 
 ---
 
+## Chunk 5: Web UI (Reid borderline tab) + Final verification
+
+Fecha o loop usuário. UI `/matches` ganha aba "Reid borderline" reaproveitando o pattern existente (lista à esquerda, detalhe à direita). React Query hook + side-by-side cards (snapshot detection vs snapshot face_record). Task final é validação completa offline + DB-deferred + smoke checklist pra deploy.
+
+**Tasks neste chunk:** 19-22 (mantém numeração contínua, Task 19 deferida vira o bloco DEFERIDA mais abaixo)
+**Sequenciamento:** 19 → 20 → 21 → 22.
+
+---
+
+### Task 19w: useReidPending + useResolveReid hooks
+
+> **Nota:** Tasks dentro do Chunk 5 são prefixadas `w` (web) pra distinguir do bloco deferido §5.1. Sequencial mas independente do numero da Task 19 deferida.
+
+**Spec ref:** §5.4 (UI ganha aba); §5.5 (REID_ENABLED=false → banner).
+
+**Files:**
+- Create: `packages/web/src/lib/queries/reid-matches.ts`
+- Test: `packages/web/tests/unit/lib/queries-reid-matches.test.tsx`
+
+- [ ] **Step 1: Failing test**
+
+`packages/web/tests/unit/lib/queries-reid-matches.test.tsx`:
+```typescript
+// NOTA (bun:test mock.module process-wide leakage, herdado da Onda 8):
+// re-registra api-client mock no beforeEach. Em isolado passa 3/3; no
+// full suite pode haver flicker — documentado.
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import type { ReidMatchPendingEnriched } from "@vipcam/shared";
+import * as React from "react";
+
+let returnRows: ReidMatchPendingEnriched[] = [];
+let postCalls: Array<{ url: string; body: unknown }> = [];
+
+const installMocks = () =>
+  mock.module("../../../src/lib/api-client", () => ({
+    apiFetch: async (url: string, opts?: { method?: string; body?: unknown }) => {
+      if (opts?.method === "POST") {
+        postCalls.push({ url, body: opts.body });
+        return undefined;
+      }
+      return returnRows;
+    },
+    snapshotUrl: (p: string | null) => (p ? `/snapshots/${p}` : null),
+    ApiError: class extends Error {},
+  }));
+installMocks();
+
+import { useReidPending, useResolveReid } from "../../../src/lib/queries/reid-matches";
+
+function makeClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+}
+
+function PendingProbe() {
+  const q = useReidPending(50);
+  return <div data-testid="count">{q.data?.length ?? 0}</div>;
+}
+
+beforeEach(() => {
+  returnRows = [];
+  postCalls = [];
+  installMocks();
+});
+
+describe("useReidPending", () => {
+  test("fetches /api/matches/reid/pending?limit=50", async () => {
+    returnRows = [
+      {
+        id: "rma-1",
+        distance: 0.45,
+        decided_at: "2026-05-20T14:00:00Z",
+        detection: { id: "d1", detected_at: "x", snapshot_path: null, camera_id: "c1" },
+        candidate: {
+          face_record_id: "fr1",
+          person_id: "p1",
+          snapshot_path: "x.jpg",
+          person_display_name: "João",
+          person_type: "client",
+        },
+      },
+    ];
+    const qc = makeClient();
+    render(
+      <QueryClientProvider client={qc}>
+        <PendingProbe />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId("count").textContent).toBe("1"));
+  });
+});
+
+describe("useResolveReid", () => {
+  test("POST /api/matches/reid/:id/resolve com decision", async () => {
+    const qc = makeClient();
+    let resolveFn: ((d: { id: string; decision: string }) => void) | null = null;
+    function Probe() {
+      const m = useResolveReid();
+      React.useEffect(() => {
+        resolveFn = (d) => m.mutate(d as { id: string; decision: "matched_to_candidate" | "rejected_new_person" });
+      }, [m]);
+      return null;
+    }
+    render(<QueryClientProvider client={qc}><Probe /></QueryClientProvider>);
+    await waitFor(() => expect(resolveFn).not.toBeNull());
+    resolveFn!({ id: "rma-1", decision: "matched_to_candidate" });
+    await waitFor(() => expect(postCalls.length).toBe(1));
+    expect(postCalls[0].url).toBe("/api/matches/reid/rma-1/resolve");
+    expect(postCalls[0].body).toEqual({ decision: "matched_to_candidate" });
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — hooks não existem)**
+
+`cd packages/web && bun test tests/unit/lib/queries-reid-matches.test.tsx`
+
+- [ ] **Step 3: Implement hooks**
+
+`packages/web/src/lib/queries/reid-matches.ts`:
+```typescript
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ReidMatchPendingEnriched, ReidResolveDecision } from "@vipcam/shared";
+import { apiFetch } from "../api-client";
+
+export function useReidPending(limit = 50) {
+  return useQuery<ReidMatchPendingEnriched[]>({
+    queryKey: ["reid-matches", "pending", limit],
+    queryFn: () => apiFetch<ReidMatchPendingEnriched[]>(`/api/matches/reid/pending?limit=${limit}`),
+  });
+}
+
+export function useResolveReid() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, decision }: { id: string; decision: ReidResolveDecision }) =>
+      apiFetch<void>(`/api/matches/reid/${id}/resolve`, {
+        method: "POST",
+        body: { decision },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["reid-matches", "pending"] });
+    },
+  });
+}
+```
+
+- [ ] **Step 4: Run test (pass)**
+
+`cd packages/web && bun test tests/unit/lib/queries-reid-matches.test.tsx` → 2 PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/web/src/lib/queries/reid-matches.ts \
+        packages/web/tests/unit/lib/queries-reid-matches.test.tsx
+git commit -m "feat(web): Onda 7 — useReidPending + useResolveReid hooks"
+```
+
+---
+
+### Task 20w: ReidMatchCard component (side-by-side)
+
+**Spec ref:** §5.4 (snapshot detection vs snapshot face_record, distance, dois botões).
+
+**Files:**
+- Create: `packages/web/src/components/reid-match-card.tsx`
+- Test: `packages/web/tests/unit/components/reid-match-card.test.tsx`
+
+- [ ] **Step 1: Failing test**
+
+`packages/web/tests/unit/components/reid-match-card.test.tsx`:
+```typescript
+import { describe, expect, test } from "bun:test";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { ReidMatchPendingEnriched } from "@vipcam/shared";
+import * as React from "react";
+import { ReidMatchCard } from "../../../src/components/reid-match-card";
+
+const item: ReidMatchPendingEnriched = {
+  id: "rma-1",
+  distance: 0.45,
+  decided_at: "2026-05-20T14:00:00Z",
+  detection: {
+    id: "d1",
+    detected_at: "2026-05-20T14:00:00Z",
+    snapshot_path: "2026-05-20/d1.jpg",
+    camera_id: "c1",
+  },
+  candidate: {
+    face_record_id: "fr1",
+    person_id: "p1",
+    snapshot_path: "2026-05-15/fr1.jpg",
+    person_display_name: "João Cliente",
+    person_type: "client",
+  },
+};
+
+describe("ReidMatchCard", () => {
+  test("renders both snapshots + distance + candidate name", () => {
+    render(<ReidMatchCard item={item} onResolve={() => {}} loading={false} />);
+    expect(screen.getByText("João Cliente")).toBeDefined();
+    expect(screen.getByText(/0\.45/)).toBeDefined();
+    const images = screen.getAllByRole("img");
+    expect(images.length).toBe(2); // detection + candidate
+  });
+
+  test("disabled buttons when loading=true", () => {
+    render(<ReidMatchCard item={item} onResolve={() => {}} loading={true} />);
+    const buttons = screen.getAllByRole("button");
+    for (const b of buttons) expect((b as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("fires onResolve with 'matched_to_candidate' when 'Mesma pessoa' clicked", async () => {
+    const user = userEvent.setup();
+    let received: { id: string; decision: string } | null = null;
+    render(
+      <ReidMatchCard
+        item={item}
+        onResolve={(p) => {
+          received = p;
+        }}
+        loading={false}
+      />,
+    );
+    await user.click(screen.getByText(/mesma pessoa/i));
+    expect(received).toEqual({ id: "rma-1", decision: "matched_to_candidate" });
+  });
+
+  test("fires onResolve with 'rejected_new_person' when 'Pessoas diferentes' clicked", async () => {
+    const user = userEvent.setup();
+    let received: { id: string; decision: string } | null = null;
+    render(
+      <ReidMatchCard
+        item={item}
+        onResolve={(p) => {
+          received = p;
+        }}
+        loading={false}
+      />,
+    );
+    await user.click(screen.getByText(/pessoas diferentes/i));
+    expect(received).toEqual({ id: "rma-1", decision: "rejected_new_person" });
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — componente não existe)**
+
+`cd packages/web && bun test tests/unit/components/reid-match-card.test.tsx`
+
+- [ ] **Step 3: Implement component**
+
+`packages/web/src/components/reid-match-card.tsx`:
+```tsx
+"use client";
+import { Button } from "@/components/ui/button";
+import { snapshotUrl } from "@/lib/api-client";
+import type { ReidMatchPendingEnriched, ReidResolveDecision } from "@vipcam/shared";
+
+export interface ReidMatchCardProps {
+  item: ReidMatchPendingEnriched;
+  onResolve: (params: { id: string; decision: ReidResolveDecision }) => void;
+  loading: boolean;
+}
+
+export function ReidMatchCard({ item, onResolve, loading }: ReidMatchCardProps) {
+  const detSrc = snapshotUrl(item.detection.snapshot_path);
+  const candSrc = snapshotUrl(item.candidate.snapshot_path);
+
+  return (
+    <div className="p-6">
+      <div className="grid grid-cols-2 gap-6 mb-4">
+        <figure>
+          <figcaption className="text-sm font-semibold mb-2">Detecção nova</figcaption>
+          {detSrc ? (
+            <img src={detSrc} alt="detection" className="w-full rounded border" />
+          ) : (
+            <div className="aspect-square bg-slate-100 rounded flex items-center justify-center text-slate-400">
+              sem snapshot
+            </div>
+          )}
+        </figure>
+        <figure>
+          <figcaption className="text-sm font-semibold mb-2">
+            Candidato:{" "}
+            <span className="font-bold">{item.candidate.person_display_name ?? "anônima"}</span>
+            <span className="text-xs text-slate-500 ml-2">({item.candidate.person_type})</span>
+          </figcaption>
+          {candSrc ? (
+            <img src={candSrc} alt="candidate" className="w-full rounded border" />
+          ) : (
+            <div className="aspect-square bg-slate-100 rounded flex items-center justify-center text-slate-400">
+              sem snapshot
+            </div>
+          )}
+        </figure>
+      </div>
+
+      <div className="text-sm text-slate-600 mb-4">
+        Distância cosine: <span className="font-mono">{item.distance.toFixed(3)}</span>
+        {" — "}
+        revisado pra: <span className="font-mono">{new Date(item.decided_at).toLocaleString()}</span>
+      </div>
+
+      <div className="flex gap-2">
+        <Button
+          onClick={() => onResolve({ id: item.id, decision: "matched_to_candidate" })}
+          disabled={loading}
+          variant="default"
+        >
+          Mesma pessoa
+        </Button>
+        <Button
+          onClick={() => onResolve({ id: item.id, decision: "rejected_new_person" })}
+          disabled={loading}
+          variant="outline"
+        >
+          Pessoas diferentes
+        </Button>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 4: Run test (pass)**
+
+`cd packages/web && bun test tests/unit/components/reid-match-card.test.tsx` → 4 PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/web/src/components/reid-match-card.tsx \
+        packages/web/tests/unit/components/reid-match-card.test.tsx
+git commit -m "feat(web): Onda 7 — ReidMatchCard component (side-by-side + 2 botões)"
+```
+
+---
+
+### Task 21w: /matches page ganha tabs (Temporal / Reid borderline)
+
+**Spec ref:** §5.4 (aba nova co-existe com temporal).
+
+**Files:**
+- Modify: `packages/web/src/app/matches/page.tsx`
+
+> **Nota:** este task NÃO escreve test novo (a page é integração — componentes já testados). Smoke visual via build + manual no browser.
+
+- [ ] **Step 1: Refactor page.tsx pra usar Tabs**
+
+Substituir `packages/web/src/app/matches/page.tsx`:
+```tsx
+"use client";
+
+import { ReidMatchCard } from "@/components/reid-match-card";
+import { MatchDetail } from "@/components/match-detail";
+import { MatchListItem } from "@/components/match-list-item";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useMatchesPending } from "@/lib/queries/matches";
+import { useReidPending, useResolveReid } from "@/lib/queries/reid-matches";
+import { useState } from "react";
+
+export const dynamic = "force-dynamic";
+
+export default function MatchesPage() {
+  // Temporal (existente, Onda 3)
+  const { data: temporal, isLoading: tLoading } = useMatchesPending();
+  const [selectedTemporalId, setSelectedTemporalId] = useState<string | null>(null);
+  const temporalList = temporal ?? [];
+  const selectedTemporal =
+    temporalList.find((m) => m.match_attempt_id === selectedTemporalId) ?? temporalList[0];
+
+  // Reid borderline (Onda 7)
+  const { data: reid, isLoading: rLoading } = useReidPending(50);
+  const resolveReid = useResolveReid();
+  const reidList = reid ?? [];
+
+  return (
+    <div className="container mx-auto p-6">
+      <h1 className="text-2xl font-semibold mb-4">Matches pendentes</h1>
+
+      <Tabs defaultValue="temporal" className="w-full">
+        <TabsList>
+          <TabsTrigger value="temporal">
+            Temporal ({tLoading ? "…" : temporalList.length})
+          </TabsTrigger>
+          <TabsTrigger value="reid">
+            Reid borderline ({rLoading ? "…" : reidList.length})
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="temporal">
+          <div className="bg-white border rounded-md flex" style={{ minHeight: 500 }}>
+            <aside className="w-72 border-r overflow-y-auto" style={{ maxHeight: 600 }}>
+              <div className="p-2 font-semibold border-b text-sm">
+                {tLoading
+                  ? "carregando…"
+                  : `${temporalList.length} pendente${temporalList.length === 1 ? "" : "s"}`}
+              </div>
+              {tLoading ? (
+                <div className="p-2"><Skeleton className="h-12" /></div>
+              ) : temporalList.length === 0 ? (
+                <div className="p-4 text-slate-500 text-sm text-center">
+                  Nenhum match pendente — tudo resolvido!
+                </div>
+              ) : (
+                temporalList.map((m) => (
+                  <MatchListItem
+                    key={m.match_attempt_id}
+                    match={m}
+                    active={selectedTemporal?.match_attempt_id === m.match_attempt_id}
+                    onClick={() => setSelectedTemporalId(m.match_attempt_id)}
+                  />
+                ))
+              )}
+            </aside>
+            <section className="flex-1">
+              {selectedTemporal ? (
+                <MatchDetail match={selectedTemporal} />
+              ) : (
+                <div className="p-8 text-slate-500 italic text-center">
+                  Selecione um match na lista
+                </div>
+              )}
+            </section>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="reid">
+          <div className="bg-white border rounded-md" style={{ minHeight: 500 }}>
+            {rLoading ? (
+              <div className="p-4"><Skeleton className="h-32" /></div>
+            ) : reidList.length === 0 ? (
+              <div className="p-8 text-slate-500 text-sm text-center italic">
+                Nenhum borderline pendente — calibração funcionando!
+              </div>
+            ) : (
+              <div className="divide-y">
+                {reidList.map((item) => (
+                  <ReidMatchCard
+                    key={item.id}
+                    item={item}
+                    onResolve={(params) => resolveReid.mutate(params)}
+                    loading={resolveReid.isPending}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+```
+
+> **Pré-requisito:** componente Tabs do shadcn. Se não existir, gerar via shadcn-ui CLI:
+> `bunx shadcn-ui@latest add tabs`
+
+- [ ] **Step 2: Build + smoke manual**
+
+```
+bun --filter '@vipcam/web' run build
+```
+Expected: build OK, `/matches` aparece como route compilável.
+
+- [ ] **Step 3: Run web full suite (sanity)**
+
+```
+cd packages/web && bun test
+```
+Expected: tests existentes + os 6 novos (Task 19w+20w) verdes (modulo flickiness conhecida de mock.module).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add packages/web/src/app/matches/page.tsx \
+        packages/web/src/components/ui/tabs.tsx
+git commit -m "feat(web): Onda 7 — /matches ganha aba Reid borderline (tabs Temporal/Reid)"
+```
+
+---
+
+### Task 22w: Final verification + offline gates + smoke checklist
+
+**Spec ref:** §8 (deploy + calibração); §9 (Onda 7 fechada quando).
+
+**Files:** nenhum novo — só verificação.
+
+- [ ] **Step 1: Offline gates completos**
+
+```
+bun --filter '*' typecheck       # 3/3 (shared + edge + web)
+bun run lint                     # exit 0
+bun --filter '@vipcam/edge' test # full edge unit suite
+cd packages/web && bun test      # full web unit suite
+bun --filter '@vipcam/web' run build
+```
+Expected:
+- typecheck 3/3 ✓
+- lint exit 0 (warnings pré-existentes ignoradas) ✓
+- edge unit: previous total + Onda 7 novos (~25+ novos entre Chunks 1-4) ✓
+- web unit: previous + Onda 7 novos (~6 novos Chunk 5) ✓
+- web build ✓
+
+- [ ] **Step 2: DB-deferred tests (manualmente — exige Postgres com migrations Onda 7)**
+
+```
+cd packages/edge
+bash scripts/run-integration-tests.sh tests/integration/persistence/face-records-repo.test.ts
+bash scripts/run-integration-tests.sh tests/integration/api/reid/match-policy-ann.test.ts
+bash scripts/run-integration-tests.sh tests/integration/persistence/persons-merge.test.ts
+bash scripts/run-integration-tests.sh tests/integration/persistence/reid-match-attempts-repo.test.ts
+```
+Expected: todos PASS contra Postgres + pgvector com migrations 0005/0006/0007 aplicadas. Total: ~13 testes DB-deferred.
+
+- [ ] **Step 3: Sidecar pytest (regression + Onda 7)**
+
+```
+cd packages/reid
+pytest tests/ -v
+```
+Expected: tests existentes (`/detect`) + Onda 7 (`test_embed.py`: 4 PASS + 1 SKIP sem fixture face).
+
+- [ ] **Step 4: Smoke pré-deploy (local com sidecar + Postgres rodando)**
+
+```
+# 1. /api/health expõe checks.reid + checks.scheduler_snapshot_retention
+curl -s -H "X-API-Key: $KEY" http://127.0.0.1:4000/api/health | jq '.checks | {reid, scheduler_snapshot_retention}'
+# 2. /api/matches/reid/pending responde array
+curl -s -H "X-API-Key: $KEY" http://127.0.0.1:4000/api/matches/reid/pending | jq length
+# 3. /snapshots/2026-05-20/<id>.jpg responde 200 (com arquivo) ou 404 (sem)
+curl -i http://127.0.0.1:4000/snapshots/2026-05-20/nonexistent.jpg
+# Esperado: 404 + {"error":"not_found"}
+```
+
+- [ ] **Step 5: Commit (sem mudança de código — vazio OK ou pular)**
+
+Nada a commitar — é um checkpoint. Pular este step.
+
+- [ ] **Step 6: Pré-merge sanity**
+
+```
+git log --oneline master..HEAD | head -30
+git diff master --stat | tail -5
+```
+Esperado: ~25 commits da Onda 7 + ~3 do spec/plan. Diff incluindo:
+- packages/edge (schemas, repos, api/reid/*, ingest/pipeline, scheduler, env, server)
+- packages/reid (main.py, tests)
+- packages/web (queries, components, app/matches)
+- packages/shared (types reid)
+- infra/systemd
+- docs/superpowers/specs + plans
+
+- [ ] **Step 7: Operational follow-up (post-merge)**
+
+Após merge + push + deploy.sh no VPS:
+
+1. **`systemctl restart vipcam-reid` + verificar logs:**
+```
+journalctl -u vipcam-reid -n 50 --no-pager
+# Esperado: ExecStartPost curl OK + ~5.5s cold start no boot
+```
+
+2. **`systemctl restart vipcam-edge` + verificar logs:**
+```
+journalctl -u vipcam-edge -n 50 --no-pager
+# Esperado: "scheduler started (employees=hourly, clients=15min, checkins=30s, snapshot_retention=daily-03:00)"
+```
+
+3. **Smokes em produção:**
+```
+KEY=$(sudo grep '^API_KEY=' /etc/vipcam/edge.env | cut -d= -f2)
+curl -s -H "X-API-Key: $KEY" https://monitoramento.franquiabv.com.br/api/health | jq .checks
+# Esperado: checks.reid.ok=true + checks.scheduler_snapshot_retention
+
+# Aguardar primeira detection real:
+curl -s -H "X-API-Key: $KEY" https://monitoramento.franquiabv.com.br/api/events/recent?limit=3 | jq '.[].detection.snapshot_path'
+# Esperado: paths não-null (eg "2026-05-20/<uuid>.jpg")
+
+# Abrir /live no browser: cards com rostos recortados visíveis.
+# Abrir /matches → aba "Reid borderline" funcional.
+```
+
+4. **Janela de calibração (§8):**
+   - Acompanhar diariamente por 7 dias: `journalctl -u vipcam-edge | grep -E "reid_status|reid_distance"` agregado por status.
+   - Triggers de ajuste: borderline > 30% → loosen LOOSE pra 0.60. Strict vs ERP contradiction > 10% → tighten STRICT pra 0.30.
+   - Tuning via `/etc/vipcam/edge.env` + `systemctl restart vipcam-edge`.
+
+5. **Após 7 dias estável:** criar `docs/superpowers/specs/2026-05-NN-onda-7-failover-b-report.md` com:
+   - Thresholds finais
+   - Distribuição (strict/borderline/new/unavailable %)
+   - Resoluções de borderline (count + merges aprovados)
+   - Decisão: continuar como está / iniciar Onda 7.1 (§5.1 rows 3-5)
+
+---
+
+## Onda 7 — bloco de tasks deferidas (Onda 7.1)
+
 ### Task 19: DEFERIDA — match temporal reid-aware (§5.1 rows 3-5)
 
 **Status:** Removida desta onda. Spec §5.1 atualizado pra marcar rows 3-5 (conflito reid+ERP) como **Onda 7.1**.
