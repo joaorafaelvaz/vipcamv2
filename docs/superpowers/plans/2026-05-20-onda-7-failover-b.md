@@ -1474,37 +1474,47 @@ git commit -m "feat(edge): Onda 7 — /snapshots/:date/:filename (multi-segment 
 
 `packages/edge/tests/unit/scheduler/snapshot-retention.test.ts`:
 ```typescript
+// NOTA (bun:test mock.module process-wide): este arquivo registra mocks
+// de `node-cron` + 4 deps do scheduler. `mock.module` em bun:test é
+// PROCESS-WIDE — outros arquivos do suite que mockam os mesmos paths
+// (ex: futuro scheduler-health.test.ts) podem sobrescrever. Re-registramos
+// no beforeEach (via installMocks) pra defender contra ordem de execução.
+// Padrão herdado de packages/web/tests/unit/lib/queries-events.test.tsx
+// (Onda 8 — documenta limitação conhecida).
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
-// Mock node-cron ANTES de importar scheduler — captura a definição do job
-// sem ativar timers reais.
-const captured: Array<{ cronExpr: string; cb: () => Promise<void> | void; name?: string }> = [];
-
-mock.module("node-cron", () => ({
-  default: {
-    schedule: (cronExpr: string, cb: () => Promise<void> | void) => {
-      captured.push({ cronExpr, cb });
-      return { stop: () => {} };
-    },
-  },
-}));
-
-// Mock dependências externas pra evitar I/O real
-mock.module("../../../src/erp-sync/checkins.js", () => ({ pollCheckins: async () => {} }));
-mock.module("../../../src/erp-sync/clients.js", () => ({ syncClients: async () => {} }));
-mock.module("../../../src/erp-sync/employees.js", () => ({ syncEmployees: async () => {} }));
-mock.module("../../../src/match-temp/orchestrator.js", () => ({
-  processAllPendingCheckins: async () => {},
-}));
+const captured: Array<{ cronExpr: string; cb: () => Promise<void> | void; tz?: string }> = [];
 let prunedDays: number | undefined;
 let prunedBaseDir: string | undefined;
-mock.module("../../../src/api/reid/snapshot-store.js", () => ({
-  pruneOlderThan: async ({ baseDir, days }: { baseDir: string; days: number }) => {
-    prunedBaseDir = baseDir;
-    prunedDays = days;
-    return 3; // pretende ter apagado 3 dirs
-  },
-}));
+
+const installMocks = () => {
+  mock.module("node-cron", () => ({
+    default: {
+      schedule: (
+        cronExpr: string,
+        cb: () => Promise<void> | void,
+        opts?: { timezone?: string },
+      ) => {
+        captured.push({ cronExpr, cb, tz: opts?.timezone });
+        return { stop: () => {} };
+      },
+    },
+  }));
+  mock.module("../../../src/erp-sync/checkins.js", () => ({ pollCheckins: async () => {} }));
+  mock.module("../../../src/erp-sync/clients.js", () => ({ syncClients: async () => {} }));
+  mock.module("../../../src/erp-sync/employees.js", () => ({ syncEmployees: async () => {} }));
+  mock.module("../../../src/match-temp/orchestrator.js", () => ({
+    processAllPendingCheckins: async () => {},
+  }));
+  mock.module("../../../src/api/reid/snapshot-store.js", () => ({
+    pruneOlderThan: async ({ baseDir, days }: { baseDir: string; days: number }) => {
+      prunedBaseDir = baseDir;
+      prunedDays = days;
+      return 3;
+    },
+  }));
+};
+installMocks();
 
 import { startScheduler } from "../../../src/erp-sync/scheduler.js";
 import { _resetHealth, getJobHealth } from "../../../src/erp-sync/scheduler-health.js";
@@ -1514,17 +1524,20 @@ beforeEach(() => {
   prunedDays = undefined;
   prunedBaseDir = undefined;
   _resetHealth();
+  installMocks();
 });
 afterEach(() => {
-  // não há cleanup do mock — bun:test garante reset entre arquivos
+  delete process.env.SNAPSHOTS_DIR;
 });
 
 describe("snapshot_retention job (Onda 7)", () => {
-  test("startScheduler registers snapshot_retention with daily 03:00 cron expr", () => {
+  test("startScheduler registers snapshot_retention diário às 03:00 BRT", () => {
     const h = startScheduler();
     h.stop();
     const j = captured.find((c) => c.cronExpr === "0 3 * * *");
     expect(j).toBeDefined();
+    // Crítico: timezone explícito p/ que "03:00" seja BRT, não UTC do VPS.
+    expect(j!.tz).toBe("America/Sao_Paulo");
   });
 
   test("snapshot_retention job calls pruneOlderThan(30d) and marks success", async () => {
@@ -1560,6 +1573,9 @@ import { getEnv } from "../config/env.js";
 
 (b) Dentro de `startScheduler`, antes do `return { stop: ... }`, adicionar:
 ```typescript
+  // 03:00 BRT — timezone explícito porque VPS systemd roda em UTC e nesse caso
+  // "0 3 * * *" puro fire-aria às 00:00 BRT (3h cedo). Pattern espelha
+  // METRICS_TZ pra consistência (Onda 7 §2.4 + plan-reviewer round 2).
   const snapJob = cron.schedule(
     "0 3 * * *",
     withRunningGuard("snapshot_retention", async () => {
@@ -1567,6 +1583,7 @@ import { getEnv } from "../config/env.js";
       const deleted = await pruneOlderThan({ baseDir: env.SNAPSHOTS_DIR, days: 30 });
       logger.info({ deleted }, "snapshot retention job — pruned old date dirs");
     }),
+    { timezone: "America/Sao_Paulo" },
   );
 ```
 
