@@ -1634,3 +1634,1445 @@ git commit -m "feat(edge): Onda 7 — scheduler snapshot_retention diário 03:00
 
 ---
 
+## Chunk 3: Match policy + Pipeline integration + Health
+
+Onde o Failover B liga de fato. Repo de face_records ganha helpers de eviction (Top-K=5 FIFO) e transferência (usado pelo merge); módulo `match-policy` decide strict/borderline/new sobre o resultado de ANN pgvector; `orchestrator` cola reid-client + match-policy + saveCrop + graceful degrade + session-inheritance; pipeline.ts é re-escrito pra usar tudo isso; `/api/health` ganha `checks.reid`.
+
+**Tasks neste chunk:** 11-15
+**Sequenciamento estrito:** 11 → 12 → 13 (orchestrator depende de 11+12) → 14 (pipeline depende de 13) → 15 (paralelo a 14, mas commit depois).
+
+---
+
+### Task 11: face-records repo — insertAndEvict + transferToPerson
+
+**Spec ref:** §4.2 (FIFO eviction transacional); §5.2 step 2 ("UPDATE face_records SET person_id = $Y WHERE person_id = $X" + eviction em Y).
+
+**Files:**
+- Modify: `packages/edge/src/persistence/repositories/face-records.repo.ts`
+- Test: `packages/edge/tests/integration/persistence/face-records-repo.test.ts` (DB-deferred)
+
+- [ ] **Step 1: Failing test (DB-deferred)**
+
+`packages/edge/tests/integration/persistence/face-records-repo.test.ts`:
+```typescript
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { sql } from "drizzle-orm";
+import { faceRecordsRepo } from "../../../src/persistence/repositories/face-records.repo.js";
+import { personsRepo } from "../../../src/persistence/repositories/persons.repo.js";
+import { getDb } from "../../../src/persistence/db.js";
+
+function vec(seed: number): number[] {
+  return Array.from({ length: 512 }, (_, i) => (seed * (i + 1)) / 1e6);
+}
+
+let personId: string;
+let dstPersonId: string;
+
+beforeEach(async () => {
+  const p = await personsRepo.create({ display_name: "Test src" });
+  personId = p.id;
+  const q = await personsRepo.create({ display_name: "Test dst" });
+  dstPersonId = q.id;
+});
+
+afterEach(async () => {
+  const db = getDb();
+  await db.execute(sql`DELETE FROM face_records WHERE person_id IN (${personId}, ${dstPersonId})`);
+  await db.execute(sql`DELETE FROM persons WHERE id IN (${personId}, ${dstPersonId})`);
+});
+
+describe("faceRecordsRepo.insertAndEvict", () => {
+  test("inserts 1st through 5th — all kept", async () => {
+    for (let i = 0; i < 5; i++) {
+      await faceRecordsRepo.insertAndEvict({
+        person_id: personId,
+        embedding: vec(i + 1),
+        snapshot_path: `2026-05-20/det-${i}.jpg`,
+        det_score: 0.9,
+        model_name: "buffalo_s",
+        model_revision: "insightface-0.7.3",
+      });
+    }
+    const db = getDb();
+    const [{ c }] = await db.execute<{ c: number }>(
+      sql`SELECT count(*)::int AS c FROM face_records WHERE person_id = ${personId}`,
+    );
+    expect(c).toBe(5);
+  });
+
+  test("6th insert evicts oldest (FIFO via created_at)", async () => {
+    const inserts: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const fr = await faceRecordsRepo.insertAndEvict({
+        person_id: personId,
+        embedding: vec(i + 1),
+        snapshot_path: `2026-05-20/det-${i}.jpg`,
+        det_score: 0.9,
+        model_name: "buffalo_s",
+        model_revision: "insightface-0.7.3",
+      });
+      inserts.push(fr.id);
+      // gap mínimo pra garantir ordem temporal distinta (created_at granularity)
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const db = getDb();
+    const rows = await db.execute<{ id: string }>(
+      sql`SELECT id FROM face_records WHERE person_id = ${personId} ORDER BY created_at ASC`,
+    );
+    expect(rows.length).toBe(5);
+    // O mais antigo (índice 0) foi deletado
+    expect(rows.map((r) => r.id)).not.toContain(inserts[0]);
+    // O 6º (mais recente) está presente
+    expect(rows.map((r) => r.id)).toContain(inserts[5]);
+  });
+});
+
+describe("faceRecordsRepo.transferToPerson", () => {
+  test("moves face_records de src pra dst e aplica FIFO eviction em dst", async () => {
+    // src tem 3, dst tem 4 → após transfer dst tem 7 → eviction deixa 5 mais recentes
+    for (let i = 0; i < 4; i++) {
+      await faceRecordsRepo.insertAndEvict({
+        person_id: dstPersonId,
+        embedding: vec(100 + i),
+        snapshot_path: `2026-05-20/dst-${i}.jpg`,
+        det_score: 0.9,
+        model_name: "buffalo_s",
+        model_revision: "insightface-0.7.3",
+      });
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    for (let i = 0; i < 3; i++) {
+      await faceRecordsRepo.insertAndEvict({
+        person_id: personId,
+        embedding: vec(200 + i),
+        snapshot_path: `2026-05-20/src-${i}.jpg`,
+        det_score: 0.9,
+        model_name: "buffalo_s",
+        model_revision: "insightface-0.7.3",
+      });
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    await faceRecordsRepo.transferToPerson(personId, dstPersonId);
+
+    const db = getDb();
+    const srcRows = await db.execute<{ c: number }>(
+      sql`SELECT count(*)::int AS c FROM face_records WHERE person_id = ${personId}`,
+    );
+    expect(srcRows[0].c).toBe(0);
+    const dstRows = await db.execute<{ c: number }>(
+      sql`SELECT count(*)::int AS c FROM face_records WHERE person_id = ${dstPersonId}`,
+    );
+    expect(dstRows[0].c).toBe(5); // cap em 5
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — métodos não existem)**
+
+`bash packages/edge/scripts/run-integration-tests.sh tests/integration/persistence/face-records-repo.test.ts`
+(Pré-req: `DATABASE_URL` setado + Postgres com migrations da Onda 7 aplicadas.)
+
+- [ ] **Step 3: Implement insertAndEvict + transferToPerson**
+
+Estender `packages/edge/src/persistence/repositories/face-records.repo.ts` — append os métodos abaixo dentro do `faceRecordsRepo` object:
+```typescript
+  /**
+   * Insere face_record + FIFO eviction (cap=5) numa transação.
+   * Pattern Onda 7 §4.2: SELECT FOR UPDATE defensivo (pipeline atual é
+   * single-threaded mas paralelização futura não-quebra).
+   */
+  async insertAndEvict(
+    data: Omit<NewFaceRecord, "id" | "created_at">,
+  ): Promise<FaceRecord> {
+    return await getDb().transaction(async (tx) => {
+      // Lock dos existentes pra evitar race com outro insert na mesma person
+      await tx.execute(sql`
+        SELECT id FROM face_records WHERE person_id = ${data.person_id} FOR UPDATE
+      `);
+      const [inserted] = await tx.insert(faceRecords).values(data).returning();
+      if (!inserted) throw new Error("face_records insert returned no row");
+      // Eviction: deleta o que sobra além de 5 mais recentes
+      await tx.execute(sql`
+        DELETE FROM face_records
+        WHERE id IN (
+          SELECT id FROM face_records
+          WHERE person_id = ${data.person_id}
+          ORDER BY created_at DESC
+          OFFSET 5
+        )
+      `);
+      return inserted;
+    });
+  },
+
+  /**
+   * Move todos face_records de srcPersonId pra dstPersonId, depois FIFO
+   * eviction em dst se total > 5. Helper usado por personsRepo.mergeInto
+   * (Onda 7 §5.2 step 2 + step 3).
+   *
+   * Importante: NÃO faz lock próprio — assume que caller já está dentro de
+   * uma transação que locked persons.srcId e persons.dstId (via mergeInto).
+   * Se for chamado fora desse contexto, race condition é possível.
+   */
+  async transferToPerson(srcPersonId: string, dstPersonId: string): Promise<void> {
+    const db = getDb();
+    await db.execute(sql`
+      UPDATE face_records SET person_id = ${dstPersonId}
+      WHERE person_id = ${srcPersonId}
+    `);
+    await db.execute(sql`
+      DELETE FROM face_records
+      WHERE id IN (
+        SELECT id FROM face_records
+        WHERE person_id = ${dstPersonId}
+        ORDER BY created_at DESC
+        OFFSET 5
+      )
+    `);
+  },
+```
+
+Imports adicionais no topo:
+```typescript
+import { sql } from "drizzle-orm";
+```
+
+- [ ] **Step 4: Run test (pass)**
+
+`bash packages/edge/scripts/run-integration-tests.sh tests/integration/persistence/face-records-repo.test.ts`
+Expected: 3 PASS.
+
+- [ ] **Step 5: Verificar typecheck**
+
+`bun --filter '@vipcam/edge' typecheck`
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/edge/src/persistence/repositories/face-records.repo.ts \
+        packages/edge/tests/integration/persistence/face-records-repo.test.ts
+git commit -m "feat(edge): Onda 7 — faceRecordsRepo.insertAndEvict (FIFO=5) + transferToPerson (suporte ao mergeInto)"
+```
+
+---
+
+### Task 12: match-policy module — decideMatch (ANN + dual threshold)
+
+**Spec ref:** §4.3 (decision tree + zero-rows behavior + thresholds via ENV).
+
+**Files:**
+- Create: `packages/edge/src/api/reid/match-policy.ts`
+- Test: `packages/edge/tests/unit/api/reid/match-policy.test.ts`
+- Test (DB-deferred): `packages/edge/tests/integration/api/reid/match-policy-ann.test.ts`
+
+- [ ] **Step 1: Failing test (pure logic, sem DB)**
+
+`packages/edge/tests/unit/api/reid/match-policy.test.ts`:
+```typescript
+import { describe, expect, test } from "bun:test";
+import {
+  classifyDistance,
+  type MatchDecision,
+} from "../../../../src/api/reid/match-policy.js";
+
+describe("classifyDistance — pure decision tree", () => {
+  const strict = 0.35;
+  const loose = 0.55;
+
+  test("dist=0 → strict", () => {
+    expect(classifyDistance(0, strict, loose)).toBe("strict");
+  });
+  test("dist=0.35 → strict (boundary inclusive)", () => {
+    expect(classifyDistance(0.35, strict, loose)).toBe("strict");
+  });
+  test("dist=0.36 → borderline", () => {
+    expect(classifyDistance(0.36, strict, loose)).toBe("borderline");
+  });
+  test("dist=0.55 → borderline (boundary inclusive)", () => {
+    expect(classifyDistance(0.55, strict, loose)).toBe("borderline");
+  });
+  test("dist=0.56 → new_person", () => {
+    expect(classifyDistance(0.56, strict, loose)).toBe("new_person");
+  });
+  test("dist=2.0 (max cosine) → new_person", () => {
+    expect(classifyDistance(2.0, strict, loose)).toBe("new_person");
+  });
+
+  // Type tightness
+  test("returns MatchDecision union", () => {
+    const _: MatchDecision = classifyDistance(0.5, strict, loose);
+    void _;
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — module não existe)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/reid/match-policy.test.ts`
+
+- [ ] **Step 3: Create match-policy module — pure decision tree primeiro**
+
+`packages/edge/src/api/reid/match-policy.ts`:
+```typescript
+import { sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { getDb } from "../../persistence/db.js";
+import { faceRecords } from "../../persistence/schema/face-records.js";
+
+/** Tipo do resultado de decideMatch (Onda 7 §4.3 decision tree). */
+export type MatchDecision = "strict" | "borderline" | "new_person";
+
+/** Pura — classifica distance. Boundaries inclusivas em ambos limiares. */
+export function classifyDistance(
+  distance: number,
+  strictMax: number,
+  looseMax: number,
+): MatchDecision {
+  if (distance <= strictMax) return "strict";
+  if (distance <= looseMax) return "borderline";
+  return "new_person";
+}
+
+export interface DecideMatchInput {
+  embedding: number[];
+  modelName: string;
+  modelRevision: string;
+  strictMax: number;
+  looseMax: number;
+}
+
+export interface DecideMatchResult {
+  decision: MatchDecision;
+  /** Apenas presente em 'strict' ou 'borderline'. */
+  candidate?: {
+    face_record_id: string;
+    person_id: string;
+    distance: number;
+  };
+}
+
+/**
+ * Query ANN top-1 + dual threshold (Onda 7 §4.3).
+ *
+ * Filtra por (model_name, model_revision) atuais — embeddings de modelos
+ * antigos viram órfãos automaticamente (zero matching post-troca).
+ *
+ * Zero rows resultantes (DB vazio OU todos os face_records são de outro
+ * modelo) → decisão `new_person` sem candidate.
+ */
+export async function decideMatch(input: DecideMatchInput): Promise<DecideMatchResult> {
+  const db = getDb();
+  // Embedding vai como string `[v1,v2,...]` (formato custom type vector512)
+  const embStr = `[${input.embedding.join(",")}]`;
+  const rows = await db
+    .select({
+      face_record_id: faceRecords.id,
+      person_id: faceRecords.person_id,
+      distance: sql<number>`embedding <=> ${embStr}::vector`,
+    })
+    .from(faceRecords)
+    .where(
+      and(
+        eq(faceRecords.model_name, input.modelName),
+        eq(faceRecords.model_revision, input.modelRevision),
+      ),
+    )
+    .orderBy(sql`embedding <=> ${embStr}::vector`)
+    .limit(1);
+
+  if (rows.length === 0) {
+    return { decision: "new_person" };
+  }
+  const [top] = rows;
+  const decision = classifyDistance(top.distance, input.strictMax, input.looseMax);
+  if (decision === "new_person") {
+    return { decision: "new_person" };
+  }
+  return {
+    decision,
+    candidate: {
+      face_record_id: top.face_record_id,
+      person_id: top.person_id,
+      distance: top.distance,
+    },
+  };
+}
+```
+
+- [ ] **Step 4: Run unit test (pass)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/reid/match-policy.test.ts` → 7 PASS.
+
+- [ ] **Step 5: Failing DB-deferred test (decideMatch ANN query real)**
+
+`packages/edge/tests/integration/api/reid/match-policy-ann.test.ts`:
+```typescript
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { sql } from "drizzle-orm";
+import { decideMatch } from "../../../../src/api/reid/match-policy.js";
+import { faceRecordsRepo } from "../../../../src/persistence/repositories/face-records.repo.js";
+import { personsRepo } from "../../../../src/persistence/repositories/persons.repo.js";
+import { getDb } from "../../../../src/persistence/db.js";
+
+let personId: string;
+
+function vecFromBase(seed: number, jitter = 0): number[] {
+  return Array.from({ length: 512 }, (_, i) => {
+    const v = ((seed * (i + 1)) % 1000) / 1000;
+    return v + (Math.sin(i + jitter) * 0.001); // pequena perturbação
+  });
+}
+
+beforeEach(async () => {
+  const p = await personsRepo.create({ display_name: "Anchor" });
+  personId = p.id;
+});
+afterEach(async () => {
+  const db = getDb();
+  await db.execute(sql`DELETE FROM face_records WHERE person_id = ${personId}`);
+  await db.execute(sql`DELETE FROM persons WHERE id = ${personId}`);
+});
+
+describe("decideMatch ANN query (DB-deferred)", () => {
+  test("empty DB → new_person", async () => {
+    const r = await decideMatch({
+      embedding: vecFromBase(1),
+      modelName: "buffalo_s",
+      modelRevision: "insightface-0.7.3",
+      strictMax: 0.35,
+      looseMax: 0.55,
+    });
+    expect(r.decision).toBe("new_person");
+    expect(r.candidate).toBeUndefined();
+  });
+
+  test("model mismatch filter → new_person (zero rows)", async () => {
+    await faceRecordsRepo.insertAndEvict({
+      person_id: personId,
+      embedding: vecFromBase(1),
+      snapshot_path: "x.jpg",
+      det_score: 0.9,
+      model_name: "OUTRO_MODELO",
+      model_revision: "y",
+    });
+    const r = await decideMatch({
+      embedding: vecFromBase(1),
+      modelName: "buffalo_s",
+      modelRevision: "insightface-0.7.3",
+      strictMax: 0.35,
+      looseMax: 0.55,
+    });
+    expect(r.decision).toBe("new_person");
+  });
+
+  test("strict match — distância ~0 contra embedding idêntico", async () => {
+    const emb = vecFromBase(1);
+    const fr = await faceRecordsRepo.insertAndEvict({
+      person_id: personId,
+      embedding: emb,
+      snapshot_path: "x.jpg",
+      det_score: 0.9,
+      model_name: "buffalo_s",
+      model_revision: "insightface-0.7.3",
+    });
+    const r = await decideMatch({
+      embedding: emb,
+      modelName: "buffalo_s",
+      modelRevision: "insightface-0.7.3",
+      strictMax: 0.35,
+      looseMax: 0.55,
+    });
+    expect(r.decision).toBe("strict");
+    expect(r.candidate?.face_record_id).toBe(fr.id);
+    expect(r.candidate?.person_id).toBe(personId);
+    expect(r.candidate?.distance).toBeLessThanOrEqual(0.001);
+  });
+});
+```
+
+- [ ] **Step 6: Run DB-deferred test (pass)**
+
+`bash packages/edge/scripts/run-integration-tests.sh tests/integration/api/reid/match-policy-ann.test.ts`
+Expected: 3 PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/edge/src/api/reid/match-policy.ts \
+        packages/edge/tests/unit/api/reid/match-policy.test.ts \
+        packages/edge/tests/integration/api/reid/match-policy-ann.test.ts
+git commit -m "feat(edge): Onda 7 — match-policy.decideMatch (ANN top-1 + dual threshold + model filter)"
+```
+
+---
+
+### Task 13: Reid orchestrator — resolvePersonIdViaReid
+
+**Spec ref:** §3.5 (graceful degrade + session-inheritance), §4.3 (3 caminhos: strict/borderline/new), §5.5 (REID_ENABLED toggle).
+
+**Files:**
+- Create: `packages/edge/src/api/reid/orchestrator.ts`
+- Modify: `packages/edge/src/persistence/repositories/reid-match-attempts.repo.ts` (criar — necessário aqui pra inserir borderline)
+- Modify: `packages/edge/src/persistence/repositories/index.ts` (export)
+- Test: `packages/edge/tests/unit/api/reid/orchestrator.test.ts`
+
+- [ ] **Step 1: Create reid_match_attempts.repo (minimal — só createAmbiguous; resto vem em Chunk 4)**
+
+`packages/edge/src/persistence/repositories/reid-match-attempts.repo.ts`:
+```typescript
+import { getDb } from "../db.js";
+import {
+  type NewReidMatchAttempt,
+  type ReidMatchAttempt,
+  reidMatchAttempts,
+} from "../schema/reid-match-attempts.js";
+
+export const reidMatchAttemptsRepo = {
+  async createAmbiguous(
+    data: Omit<NewReidMatchAttempt, "id" | "decision" | "decided_by" | "decided_at">,
+  ): Promise<ReidMatchAttempt> {
+    const [row] = await getDb()
+      .insert(reidMatchAttempts)
+      .values({ ...data, decision: "ambiguous", decided_by: "system" })
+      .returning();
+    if (!row) throw new Error("reid_match_attempts insert returned no row");
+    return row;
+  },
+};
+```
+
+E adicionar export em `packages/edge/src/persistence/repositories/index.ts`:
+```typescript
+export * from "./reid-match-attempts.repo.js";
+```
+
+- [ ] **Step 2: Failing test do orchestrator**
+
+`packages/edge/tests/unit/api/reid/orchestrator.test.ts`:
+```typescript
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+import type { EmbedResult } from "@vipcam/shared";
+import type { DecideMatchResult } from "../../../../src/api/reid/match-policy.js";
+
+// Mock todas as deps externas via mock.module ANTES de importar o orchestrator
+let embedReturn: EmbedResult | Error = new Error("not configured");
+let decideReturn: DecideMatchResult = { decision: "new_person" };
+let saveCropReturn = "2026-05-20/test.jpg";
+let envOverride: Record<string, unknown> = {};
+
+const installMocks = () => {
+  mock.module("../../../../src/discovery/image-probe/reid-client.js", () => ({
+    embed: async () => {
+      if (embedReturn instanceof Error) throw embedReturn;
+      return embedReturn;
+    },
+    ReidError: class extends Error {},
+  }));
+  mock.module("../../../../src/api/reid/match-policy.js", () => ({
+    decideMatch: async () => decideReturn,
+  }));
+  mock.module("../../../../src/api/reid/snapshot-store.js", () => ({
+    saveCrop: async () => saveCropReturn,
+  }));
+  mock.module("../../../../src/config/env.js", () => ({
+    getEnv: () => ({
+      REID_ENABLED: true,
+      REID_BASE_URL: "http://x",
+      REID_DIST_STRICT: 0.35,
+      REID_DIST_LOOSE: 0.55,
+      SNAPSHOTS_DIR: "/tmp/snaps",
+      ...envOverride,
+    }),
+  }));
+};
+installMocks();
+
+import { resolvePersonIdViaReid } from "../../../../src/api/reid/orchestrator.js";
+
+const baseInput = {
+  cameraId: "cam-1",
+  detectionId: "det-1",
+  detectedAt: new Date("2026-05-20T14:30:00Z"),
+  sessionId: "sess-1",
+  bbox: { x: 100, y: 100, w: 200, h: 200 },
+  frameBytes: Buffer.from([0xff, 0xd8]),
+};
+
+beforeEach(() => {
+  embedReturn = new Error("not configured");
+  decideReturn = { decision: "new_person" };
+  saveCropReturn = "2026-05-20/test.jpg";
+  envOverride = {};
+  installMocks();
+});
+
+describe("resolvePersonIdViaReid", () => {
+  test("REID_ENABLED=false → status=disabled, snapshot ainda salva", async () => {
+    envOverride = { REID_ENABLED: false };
+    installMocks();
+    const r = await resolvePersonIdViaReid({
+      ...baseInput,
+      sessionInheritedPersonId: null,
+    });
+    expect(r.status).toBe("disabled");
+    expect(r.personId).toBeNull();
+    expect(r.snapshotPath).toBe("2026-05-20/test.jpg"); // saveCrop ainda roda no caller; ver pipeline
+  });
+
+  test("embed throws → status=unavailable + session-inheritance fallback", async () => {
+    embedReturn = new Error("ECONNREFUSED");
+    const r = await resolvePersonIdViaReid({
+      ...baseInput,
+      sessionInheritedPersonId: "p-inherited",
+    });
+    expect(r.status).toBe("inherited_session");
+    expect(r.personId).toBe("p-inherited");
+    expect(r.reidError).toBeDefined();
+  });
+
+  test("embed throws + sem session inheritance → status=unavailable + personId=null", async () => {
+    embedReturn = new Error("timeout");
+    const r = await resolvePersonIdViaReid({
+      ...baseInput,
+      sessionInheritedPersonId: null,
+    });
+    expect(r.status).toBe("unavailable");
+    expect(r.personId).toBeNull();
+  });
+
+  test("decision=strict → status=matched_strict, personId=candidate.person_id", async () => {
+    embedReturn = {
+      embedding: Array(512).fill(0.01),
+      det_score: 0.9,
+      infer_ms: 28,
+      model_name: "buffalo_s",
+      model_revision: "insightface-0.7.3",
+    };
+    decideReturn = {
+      decision: "strict",
+      candidate: { face_record_id: "fr-1", person_id: "p-existing", distance: 0.2 },
+    };
+    const r = await resolvePersonIdViaReid({
+      ...baseInput,
+      sessionInheritedPersonId: null,
+    });
+    expect(r.status).toBe("matched_strict");
+    expect(r.personId).toBe("p-existing");
+    expect(r.reidDistance).toBe(0.2);
+  });
+
+  test("decision=new_person → status=new_person + personId=null (caller cria person)", async () => {
+    embedReturn = {
+      embedding: Array(512).fill(0.01),
+      det_score: 0.9,
+      infer_ms: 28,
+      model_name: "buffalo_s",
+      model_revision: "insightface-0.7.3",
+    };
+    decideReturn = { decision: "new_person" };
+    const r = await resolvePersonIdViaReid({
+      ...baseInput,
+      sessionInheritedPersonId: null,
+    });
+    expect(r.status).toBe("new_person");
+    expect(r.personId).toBeNull();
+    expect(r.embedding).toBeDefined();
+  });
+
+  test("decision=borderline → status=borderline + personId=null + candidate exposto", async () => {
+    embedReturn = {
+      embedding: Array(512).fill(0.01),
+      det_score: 0.9,
+      infer_ms: 28,
+      model_name: "buffalo_s",
+      model_revision: "insightface-0.7.3",
+    };
+    decideReturn = {
+      decision: "borderline",
+      candidate: { face_record_id: "fr-2", person_id: "p-maybe", distance: 0.45 },
+    };
+    const r = await resolvePersonIdViaReid({
+      ...baseInput,
+      sessionInheritedPersonId: null,
+    });
+    expect(r.status).toBe("borderline");
+    expect(r.personId).toBeNull();
+    expect(r.borderlineCandidate).toEqual({
+      face_record_id: "fr-2",
+      person_id: "p-maybe",
+      distance: 0.45,
+    });
+  });
+});
+```
+
+- [ ] **Step 3: Run test (fail — orchestrator module não existe)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/reid/orchestrator.test.ts`
+
+- [ ] **Step 4: Implement orchestrator**
+
+`packages/edge/src/api/reid/orchestrator.ts`:
+```typescript
+import type { BBox, EmbedResult, ReidStatus } from "@vipcam/shared";
+import { getEnv } from "../../config/env.js";
+import { embed } from "../../discovery/image-probe/reid-client.js";
+import { logger } from "../../obs/logger.js";
+import { decideMatch } from "./match-policy.js";
+
+export interface ReidInput {
+  cameraId: string;
+  detectionId: string;
+  detectedAt: Date;
+  sessionId: string;
+  bbox: BBox;
+  frameBytes: Buffer;
+  /** person_id de detection prévia da MESMA sessão aberta (Onda 7 §3.5
+   * session-inheritance fallback). null se sessão nova ou anterior anônima. */
+  sessionInheritedPersonId: string | null;
+}
+
+export interface ReidOutput {
+  /** Person resolvido pelo reid (null se borderline, new, ou unavailable
+   * sem session inheritance). */
+  personId: string | null;
+  /** Estado pra gravar em detections.face_attrs.reid_status. */
+  status: ReidStatus;
+  /** Distance do match (apenas presente em strict/borderline). */
+  reidDistance?: number;
+  /** Erro do reid client (apenas presente em status='unavailable'/'inherited_session'). */
+  reidError?: string;
+  /** Embedding bruto — caller usa pra criar face_record em strict/new_person. */
+  embedding?: EmbedResult;
+  /** Candidato borderline — caller usa pra inserir reid_match_attempt(ambiguous). */
+  borderlineCandidate?: { face_record_id: string; person_id: string; distance: number };
+}
+
+/**
+ * Orquestra reid para uma detection: embed + match + decide.
+ * NÃO escreve no DB (caller é o pipeline que orquestra a transação completa).
+ * NÃO escreve em disco (caller faz saveCrop).
+ *
+ * Política de falha (Onda 7 §3.5):
+ * 1. REID_ENABLED=false → status='disabled', skip embed.
+ * 2. embed() throws → status='unavailable'. Se sessionInheritedPersonId
+ *    presente, herda esse personId + status='inherited_session'. Senão personId=null.
+ * 3. embed() ok + decideMatch → strict / borderline / new_person.
+ */
+export async function resolvePersonIdViaReid(input: ReidInput): Promise<ReidOutput> {
+  const env = getEnv();
+  if (!env.REID_ENABLED) {
+    return { personId: null, status: "disabled" };
+  }
+  let emb: EmbedResult;
+  try {
+    emb = await embed(env.REID_BASE_URL, input.frameBytes, input.bbox);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ err: msg, detectionId: input.detectionId }, "reid embed failed");
+    if (input.sessionInheritedPersonId) {
+      return {
+        personId: input.sessionInheritedPersonId,
+        status: "inherited_session",
+        reidError: msg,
+      };
+    }
+    return { personId: null, status: "unavailable", reidError: msg };
+  }
+
+  const match = await decideMatch({
+    embedding: emb.embedding,
+    modelName: emb.model_name,
+    modelRevision: emb.model_revision,
+    strictMax: env.REID_DIST_STRICT,
+    looseMax: env.REID_DIST_LOOSE,
+  });
+
+  if (match.decision === "strict") {
+    return {
+      personId: match.candidate!.person_id,
+      status: "matched_strict",
+      reidDistance: match.candidate!.distance,
+      embedding: emb,
+    };
+  }
+  if (match.decision === "borderline") {
+    return {
+      personId: null,
+      status: "borderline",
+      reidDistance: match.candidate!.distance,
+      embedding: emb,
+      borderlineCandidate: match.candidate,
+    };
+  }
+  return { personId: null, status: "new_person", embedding: emb };
+}
+```
+
+- [ ] **Step 5: Run test (pass)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/reid/orchestrator.test.ts` → 6 PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/edge/src/api/reid/orchestrator.ts \
+        packages/edge/src/persistence/repositories/reid-match-attempts.repo.ts \
+        packages/edge/src/persistence/repositories/index.ts \
+        packages/edge/tests/unit/api/reid/orchestrator.test.ts
+git commit -m "feat(edge): Onda 7 — reid orchestrator (graceful degrade + session-inheritance + 3 decision paths)"
+```
+
+---
+
+### Task 14: Pipeline rewrite + listener wiring
+
+**Spec ref:** §2.5 (sync sequencial: capture → embed → ANN → write → INSERT); §3.5 (face_attrs.reid_status); §5.5 (REID_ENABLED).
+
+**Files:**
+- Modify: `packages/edge/src/ingest/pipeline.ts`
+- Modify: `packages/edge/src/ingest/listener.ts` (passa o client pro pipeline)
+- Modify: `packages/edge/src/discovery/image-probe/reid-client.ts` (já tem detect; reusa pattern pra captureSnapshot helper)
+- Modify: `packages/edge/tests/unit/ingest/pipeline.test.ts` (se existir; senão criar)
+
+- [ ] **Step 1: Failing test do pipeline (mock orchestrator + saveCrop + reid-client.captureSnapshot)**
+
+> **Nota:** este teste é grande — é a integração do orchestrator no pipeline. Aceitar +50 LoC porque cobre TODOS os caminhos.
+
+`packages/edge/tests/unit/ingest/pipeline-reid.test.ts`:
+```typescript
+// Bun:test mock.module process-wide note — mesma defesa do Onda 8.
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+let orchestratorResult: unknown = { personId: null, status: "disabled" };
+let savedCrop: { detectionId?: string; jpegBytes?: Buffer } = {};
+let capturedFrame: Buffer = Buffer.from([0xff, 0xd8]);
+let insertedDetection: Record<string, unknown> | null = null;
+let createdPerson: Record<string, unknown> | null = null;
+let createdFaceRecord: Record<string, unknown> | null = null;
+let createdAmbiguous: Record<string, unknown> | null = null;
+
+const installMocks = () => {
+  mock.module("../../../src/api/reid/orchestrator.js", () => ({
+    resolvePersonIdViaReid: async () => orchestratorResult,
+  }));
+  mock.module("../../../src/api/reid/snapshot-store.js", () => ({
+    saveCrop: async (p: { detectionId: string; jpegBytes: Buffer }) => {
+      savedCrop = p;
+      return "2026-05-20/test.jpg";
+    },
+  }));
+  mock.module("../../../src/persistence/repositories/detections.repo.js", () => ({
+    detectionsRepo: {
+      create: async (d: Record<string, unknown>) => {
+        insertedDetection = d;
+        return { id: d.id ?? "det-x", ...d };
+      },
+    },
+  }));
+  mock.module("../../../src/persistence/repositories/persons.repo.js", () => ({
+    personsRepo: {
+      create: async (p: Record<string, unknown>) => {
+        createdPerson = p;
+        return { id: "p-new", ...p };
+      },
+      incrementVisitCount: async () => undefined,
+    },
+  }));
+  mock.module("../../../src/persistence/repositories/face-records.repo.js", () => ({
+    faceRecordsRepo: {
+      insertAndEvict: async (d: Record<string, unknown>) => {
+        createdFaceRecord = d;
+        return { id: "fr-x", ...d };
+      },
+    },
+  }));
+  mock.module("../../../src/persistence/repositories/reid-match-attempts.repo.js", () => ({
+    reidMatchAttemptsRepo: {
+      createAmbiguous: async (d: Record<string, unknown>) => {
+        createdAmbiguous = d;
+        return { id: "rma-x", ...d };
+      },
+    },
+  }));
+  mock.module("../../../src/persistence/repositories/sessions.repo.js", () => ({
+    sessionsRepo: {
+      findOpenForTrack: async () => null,
+      create: async () => ({ id: "sess-new", person_id: null }),
+      appendDetection: async () => undefined,
+      recalcDominantEmotion: async () => undefined,
+    },
+  }));
+};
+installMocks();
+
+import { processEvent } from "../../../src/ingest/pipeline.js";
+
+function captureSnapshotStub(): Promise<Buffer> {
+  return Promise.resolve(capturedFrame);
+}
+
+beforeEach(() => {
+  orchestratorResult = { personId: null, status: "disabled" };
+  savedCrop = {};
+  insertedDetection = null;
+  createdPerson = null;
+  createdFaceRecord = null;
+  createdAmbiguous = null;
+  installMocks();
+});
+
+describe("processEvent — reid integration", () => {
+  test("orchestrator strict match → detection gets person_id + face_record criado", async () => {
+    orchestratorResult = {
+      personId: "p-existing",
+      status: "matched_strict",
+      reidDistance: 0.2,
+      embedding: {
+        embedding: Array(512).fill(0.1),
+        det_score: 0.95,
+        infer_ms: 28,
+        model_name: "buffalo_s",
+        model_revision: "insightface-0.7.3",
+      },
+    };
+    const raw = {
+      // shape mínimo aceito pelo normalizer — ver pipeline.ts atual
+      received_at: "2026-05-20T14:30:00Z",
+      index: 1,
+      parsed: {
+        code: "FaceDetection",
+        action: "Start",
+        data: {
+          UID: "track-1",
+          Object: { BoundingBox: [100, 100, 300, 300] },
+        },
+      },
+    } as Parameters<typeof processEvent>[0];
+
+    await processEvent(raw, "cam-1", { captureSnapshot: captureSnapshotStub });
+
+    expect(insertedDetection?.person_id).toBe("p-existing");
+    expect(insertedDetection?.snapshot_path).toBe("2026-05-20/test.jpg");
+    expect((insertedDetection?.face_attrs as Record<string, unknown>).reid_status).toBe(
+      "matched_strict",
+    );
+    expect(createdFaceRecord?.person_id).toBe("p-existing");
+    expect(createdPerson).toBeNull();
+  });
+
+  test("orchestrator new_person → cria person anônima + face_record", async () => {
+    orchestratorResult = {
+      personId: null,
+      status: "new_person",
+      embedding: {
+        embedding: Array(512).fill(0.1),
+        det_score: 0.95,
+        infer_ms: 28,
+        model_name: "buffalo_s",
+        model_revision: "insightface-0.7.3",
+      },
+    };
+    const raw = {
+      received_at: "2026-05-20T14:30:00Z",
+      index: 1,
+      parsed: {
+        code: "FaceDetection",
+        action: "Start",
+        data: {
+          UID: "track-2",
+          Object: { BoundingBox: [100, 100, 300, 300] },
+        },
+      },
+    } as Parameters<typeof processEvent>[0];
+
+    await processEvent(raw, "cam-1", { captureSnapshot: captureSnapshotStub });
+
+    expect(createdPerson).toBeDefined();
+    expect((createdPerson as Record<string, unknown>).person_type).toBe("anonymous");
+    expect(insertedDetection?.person_id).toBe("p-new");
+    expect(createdFaceRecord?.person_id).toBe("p-new");
+    expect((createdFaceRecord as Record<string, unknown>).is_primary).toBe(true);
+  });
+
+  test("orchestrator borderline → INSERT reid_match_attempt(ambiguous)", async () => {
+    orchestratorResult = {
+      personId: null,
+      status: "borderline",
+      reidDistance: 0.45,
+      embedding: {
+        embedding: Array(512).fill(0.1),
+        det_score: 0.9,
+        infer_ms: 28,
+        model_name: "buffalo_s",
+        model_revision: "insightface-0.7.3",
+      },
+      borderlineCandidate: { face_record_id: "fr-cand", person_id: "p-cand", distance: 0.45 },
+    };
+    const raw = {
+      received_at: "2026-05-20T14:30:00Z",
+      index: 1,
+      parsed: {
+        code: "FaceDetection",
+        action: "Start",
+        data: {
+          UID: "track-3",
+          Object: { BoundingBox: [100, 100, 300, 300] },
+        },
+      },
+    } as Parameters<typeof processEvent>[0];
+
+    await processEvent(raw, "cam-1", { captureSnapshot: captureSnapshotStub });
+
+    expect(createdAmbiguous?.candidate_face_record_id).toBe("fr-cand");
+    expect(createdAmbiguous?.candidate_person_id).toBe("p-cand");
+    expect(createdAmbiguous?.distance).toBe(0.45);
+    expect(insertedDetection?.person_id).toBeNull();
+    expect(createdFaceRecord).toBeNull(); // borderline NÃO grava face_record
+  });
+
+  test("status=disabled → snapshot ainda escreve (parte independente)", async () => {
+    orchestratorResult = { personId: null, status: "disabled" };
+    const raw = {
+      received_at: "2026-05-20T14:30:00Z",
+      index: 1,
+      parsed: {
+        code: "FaceDetection",
+        action: "Start",
+        data: {
+          UID: "track-4",
+          Object: { BoundingBox: [100, 100, 300, 300] },
+        },
+      },
+    } as Parameters<typeof processEvent>[0];
+
+    await processEvent(raw, "cam-1", { captureSnapshot: captureSnapshotStub });
+
+    expect(insertedDetection?.snapshot_path).toBe("2026-05-20/test.jpg");
+    expect((insertedDetection?.face_attrs as Record<string, unknown>).reid_status).toBe("disabled");
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — processEvent não aceita captureSnapshot e não chama orchestrator)**
+
+`bun --filter '@vipcam/edge' test tests/unit/ingest/pipeline-reid.test.ts`
+
+- [ ] **Step 3: Rewrite pipeline.ts**
+
+Substituir o `processEvent` atual por uma versão que:
+1. Recebe `deps?: { captureSnapshot?: () => Promise<Buffer> }` opcional
+2. Após resolveSessionId, captura frame se evento tem bbox + REID_ENABLED + captureSnapshot fornecido
+3. Chama orchestrator
+4. Salva crop em disco (sempre que tem snapshot bytes — independente do reid status)
+5. Cria person nova se status=new_person
+6. Insere detection com snapshot_path + person_id + face_attrs.reid_status/reid_distance/reid_error
+7. Insere face_record se status in {strict, new_person}
+8. Insere reid_match_attempt(ambiguous) se status=borderline
+9. Mantém recalcDominantEmotion + eventBus.publish
+
+Código completo (substituir o `export async function processEvent` inteiro):
+```typescript
+export interface ProcessEventDeps {
+  /** Closure que captura frame inteiro via snapshot.cgi. Injetada pelo
+   * listener (que tem o DahuaHttpClient). Quando undefined (ex: testes
+   * sem câmera), reid é skipado e detection vai sem snapshot. */
+  captureSnapshot?: () => Promise<Buffer>;
+}
+
+export async function processEvent(
+  raw: CapturedEvent,
+  cameraId: string,
+  deps: ProcessEventDeps = {},
+): Promise<void> {
+  try {
+    const event = normalize(raw, cameraId);
+    if (!event) return;
+    if (event.type === "face.detected.stop") {
+      logger.debug({ track_id: event.track_id }, "face.detected.stop — no detection persisted");
+      return;
+    }
+
+    const detectedAt = new Date(event.detected_at);
+    // Resolve session ANTES do reid pra ter sessionInheritedPersonId
+    const sessionId = await resolveSessionIdWithAnchor(event, detectedAt);
+    const sessionInheritedPersonId = await sessionsRepo
+      .findOpenForTrack(event.camera_id, event.track_id ?? "", detectedAt, SESSION_GAP_MS)
+      .then((s) => s?.person_id ?? null);
+
+    // Snapshot capture + reid orchestration (apenas se temos bbox + captureSnapshot)
+    let snapshotPath: string | null = null;
+    let reidOut: import("../api/reid/orchestrator.js").ReidOutput | null = null;
+    const detectionId = crypto.randomUUID();
+    if (event.bbox && deps.captureSnapshot) {
+      try {
+        const frameBytes = await deps.captureSnapshot();
+        const { resolvePersonIdViaReid } = await import("../api/reid/orchestrator.js");
+        reidOut = await resolvePersonIdViaReid({
+          cameraId: event.camera_id,
+          detectionId,
+          detectedAt,
+          sessionId,
+          bbox: event.bbox,
+          frameBytes,
+          sessionInheritedPersonId,
+        });
+        // Save snapshot (sempre — mesmo se reid falhou, queremos o /live mostrando rosto)
+        const { saveCrop } = await import("../api/reid/snapshot-store.js");
+        const { getEnv } = await import("../config/env.js");
+        // NB: gravamos o FRAME INTEIRO (não o crop) porque crop pra serializar
+        // pediria PIL/sharp no edge — Onda 7 mantém JPEG do frame inteiro até
+        // que UI tenha demand pra apertar (Onda futura).
+        snapshotPath = await saveCrop({
+          baseDir: getEnv().SNAPSHOTS_DIR,
+          detectionId,
+          detectedAt,
+          jpegBytes: frameBytes,
+        });
+      } catch (err) {
+        logger.warn({ err, detectionId }, "snapshot/reid pipeline error — degrading");
+      }
+    }
+
+    // Decide person_id final
+    let personId: string | null = reidOut?.personId ?? null;
+    if (reidOut?.status === "new_person") {
+      const created = await personsRepo.create({
+        person_type: "anonymous",
+        first_seen_at: detectedAt,
+        last_seen_at: detectedAt,
+      });
+      personId = created.id;
+    } else if (reidOut?.status === "matched_strict" && personId) {
+      await personsRepo.incrementVisitCount(personId, detectedAt);
+    }
+
+    // Compose face_attrs (parsed + reid metadata)
+    const parsedAttrs: Record<string, unknown> = {};
+    if (event.face_attrs) {
+      const { raw: _raw, ...rest } = event.face_attrs;
+      Object.assign(parsedAttrs, rest);
+    }
+    if (reidOut) {
+      parsedAttrs.reid_status = reidOut.status;
+      if (reidOut.reidDistance !== undefined) parsedAttrs.reid_distance = reidOut.reidDistance;
+      if (reidOut.reidError) parsedAttrs.reid_error = reidOut.reidError;
+    }
+
+    const detection: Parameters<typeof detectionsRepo.create>[0] = {
+      id: detectionId,
+      camera_id: event.camera_id,
+      person_id: personId,
+      session_id: sessionId,
+      face_attrs: parsedAttrs,
+      detected_at: detectedAt,
+      raw_event: event.raw_event,
+    };
+    if (event.track_id !== undefined) detection.track_id = event.track_id;
+    if (event.bbox !== undefined) detection.bbox = event.bbox;
+    if (event.face_attrs?.emotion !== undefined) detection.dominant_emotion = event.face_attrs.emotion;
+    if (event.face_attrs?.emotion_intensity !== undefined) {
+      detection.emotion_confidence = event.face_attrs.emotion_intensity / 100;
+    }
+    if (snapshotPath) detection.snapshot_path = snapshotPath;
+
+    const created = await detectionsRepo.create(detection);
+
+    // face_record (strict ou new_person tem embedding pra gravar)
+    if (
+      reidOut?.embedding &&
+      (reidOut.status === "matched_strict" || reidOut.status === "new_person") &&
+      personId
+    ) {
+      const { faceRecordsRepo } = await import("../persistence/repositories/face-records.repo.js");
+      await faceRecordsRepo.insertAndEvict({
+        person_id: personId,
+        embedding: reidOut.embedding.embedding,
+        snapshot_path: snapshotPath ?? "",
+        det_score: reidOut.embedding.det_score,
+        model_name: reidOut.embedding.model_name,
+        model_revision: reidOut.embedding.model_revision,
+        is_primary: reidOut.status === "new_person", // primeiro embedding da person nova vira primary
+      });
+    }
+
+    // reid_match_attempt(ambiguous) se borderline
+    if (reidOut?.status === "borderline" && reidOut.borderlineCandidate) {
+      const { reidMatchAttemptsRepo } = await import(
+        "../persistence/repositories/reid-match-attempts.repo.js"
+      );
+      await reidMatchAttemptsRepo.createAmbiguous({
+        detection_id: created.id,
+        candidate_face_record_id: reidOut.borderlineCandidate.face_record_id,
+        candidate_person_id: reidOut.borderlineCandidate.person_id,
+        distance: reidOut.borderlineCandidate.distance,
+      });
+    }
+
+    if (detection.dominant_emotion) await sessionsRepo.recalcDominantEmotion(sessionId);
+
+    // event-bus dormente (Onda 8: SSE removido, mas publish ainda existe sem consumer)
+    try {
+      const liveEvent: LiveDetectionEvent = {
+        type: "detection",
+        detection: {
+          id: created.id,
+          detected_at: created.detected_at.toISOString(),
+          snapshot_path: created.snapshot_path,
+          face_attrs: created.face_attrs as Record<string, unknown>,
+          dominant_emotion: created.dominant_emotion,
+          emotion_confidence: created.emotion_confidence,
+          session_id: created.session_id,
+          camera_id: created.camera_id,
+        },
+        person: null,
+      };
+      eventBus.publish(liveEvent);
+    } catch (err) {
+      logger.warn({ err }, "event bus publish failed — ingest continues");
+    }
+
+    logger.debug({ event: event.type, personId, sessionId }, "ingest persisted");
+  } catch (err) {
+    logger.error({ err, raw }, "ingest pipeline failed for event");
+  }
+}
+
+// Helper privado — encapsula a lógica de resolveSessionId atual sem o personId
+// (que agora é decidido pós-reid). Preserva semântica do shouldStartNewSession.
+async function resolveSessionIdWithAnchor(event: CanonicalEvent, detectedAt: Date): Promise<string> {
+  const existing = event.track_id
+    ? await sessionsRepo.findOpenForTrack(event.camera_id, event.track_id, detectedAt, SESSION_GAP_MS)
+    : null;
+  if (existing && !shouldStartNewSession(existing.last_seen_at, detectedAt, SESSION_GAP_MS)) {
+    await sessionsRepo.appendDetection(existing.id, detectedAt);
+    return existing.id;
+  }
+  const newSession: Parameters<typeof sessionsRepo.create>[0] = {
+    camera_id: event.camera_id,
+    person_id: null, // pessoa será setada pós-reid via UPDATE futuro (ou ficam null pra anônimas)
+    started_at: detectedAt,
+    last_seen_at: detectedAt,
+    detection_count: 1,
+  };
+  if (event.track_id !== undefined) newSession.current_track_id = event.track_id;
+  const created = await sessionsRepo.create(newSession);
+  return created.id;
+}
+```
+
+Remover o `resolvePersonId` stub e o antigo `resolveSessionId`.
+
+- [ ] **Step 4: Update listener.ts pra passar captureSnapshot**
+
+Em `packages/edge/src/ingest/listener.ts`, dentro de `runOnce`, no `onEvent`:
+```typescript
+    onEvent: (captured) => {
+      const captureSnapshot = () =>
+        client
+          .get("/cgi-bin/snapshot.cgi?channel=1")
+          .then((r) => r.arrayBuffer())
+          .then((b) => Buffer.from(b));
+      void processEvent(captured, camera.id, { captureSnapshot });
+      // ... resto do probe sampler (preservado)
+    },
+```
+
+- [ ] **Step 5: Run test (pass)**
+
+`bun --filter '@vipcam/edge' test tests/unit/ingest/pipeline-reid.test.ts` → 4 PASS.
+
+- [ ] **Step 6: Run full edge tests + typecheck**
+
+```
+bun --filter '@vipcam/edge' typecheck
+bun --filter '@vipcam/edge' test
+```
+Expected: tudo verde. Se algum test antigo do pipeline existir e quebrar pelo signature mudou, atualizar (provavelmente chamava processEvent(raw, cameraId) sem deps — esse continua funcionando, default {} skipa reid).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/edge/src/ingest/pipeline.ts \
+        packages/edge/src/ingest/listener.ts \
+        packages/edge/tests/unit/ingest/pipeline-reid.test.ts
+git commit -m "feat(edge): Onda 7 — pipeline.processEvent integra reid orchestrator + snapshot capture/write"
+```
+
+---
+
+### Task 15: /api/health checks.reid (sync ping)
+
+**Spec ref:** §3.4 (ping sync, latency_ms, model_name/revision, ok=false degrada overall).
+
+**Files:**
+- Create: `packages/edge/src/api/reid/health.ts`
+- Modify: `packages/edge/src/api/server.ts` (incluir checks.reid no /api/health handler)
+- Test: `packages/edge/tests/unit/api/reid/health.test.ts`
+
+- [ ] **Step 1: Failing test**
+
+`packages/edge/tests/unit/api/reid/health.test.ts`:
+```typescript
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+
+const ORIG_FETCH = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = ORIG_FETCH;
+});
+
+import { pingReid } from "../../../../src/api/reid/health.ts";
+
+describe("pingReid", () => {
+  test("returns ok=true + model metadata when /health responds 200", async () => {
+    globalThis.fetch = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: "healthy",
+            version: "0.2.0",
+            model_name: "buffalo_s",
+            model_revision: "insightface-0.7.3",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    ) as typeof globalThis.fetch;
+
+    const r = await pingReid("http://127.0.0.1:5005");
+    expect(r.ok).toBe(true);
+    expect(r.latency_ms).toBeGreaterThanOrEqual(0);
+    expect(r.model_name).toBe("buffalo_s");
+    expect(r.model_revision).toBe("insightface-0.7.3");
+    expect(r.error).toBeUndefined();
+  });
+
+  test("returns ok=false on HTTP non-2xx", async () => {
+    globalThis.fetch = mock(
+      async () => new Response("server error", { status: 500 }),
+    ) as typeof globalThis.fetch;
+    const r = await pingReid("http://127.0.0.1:5005");
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("HTTP 500");
+  });
+
+  test("returns ok=false on fetch failure (timeout/network)", async () => {
+    globalThis.fetch = mock(async () => {
+      throw new Error("ECONNREFUSED");
+    }) as typeof globalThis.fetch;
+    const r = await pingReid("http://127.0.0.1:5005");
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("ECONNREFUSED");
+  });
+
+  test("disabled flag short-circuits ping (REID_ENABLED=false)", async () => {
+    let fetched = false;
+    globalThis.fetch = mock(async () => {
+      fetched = true;
+      return new Response("never", { status: 200 });
+    }) as typeof globalThis.fetch;
+    const r = await pingReid("http://127.0.0.1:5005", { disabled: true });
+    expect(r.ok).toBe(true);
+    expect(r.disabled).toBe(true);
+    expect(fetched).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — module não existe)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/reid/health.test.ts`
+
+- [ ] **Step 3: Implement pingReid**
+
+`packages/edge/src/api/reid/health.ts`:
+```typescript
+import type { HealthCheck } from "@vipcam/shared";
+
+export interface ReidHealthCheck extends HealthCheck {
+  model_name?: string;
+  model_revision?: string;
+  /** True quando REID_ENABLED=false — skip ping, ok=true (sem degradar overall). */
+  disabled?: boolean;
+}
+
+/**
+ * Ping síncrono ao /health do sidecar reid (Onda 7 §3.4).
+ *
+ * Timeout 1s — sidecar é localhost; latency normal <10ms. Se demorar mais,
+ * algo está errado e degrade health pra "degraded" no /api/health.
+ *
+ * Sem cache — estado sempre real. /api/health é raro o suficiente pra que
+ * isso não seja problema (uptime monitoring chama cada 30-60s).
+ */
+export async function pingReid(
+  reidBaseUrl: string,
+  opts: { disabled?: boolean } = {},
+): Promise<ReidHealthCheck> {
+  if (opts.disabled) {
+    return { ok: true, disabled: true };
+  }
+  const t0 = Date.now();
+  try {
+    const r = await fetch(`${reidBaseUrl}/health`, {
+      signal: AbortSignal.timeout(1_000),
+    });
+    if (!r.ok) {
+      return { ok: false, error: `HTTP ${r.status}` };
+    }
+    const body = (await r.json()) as {
+      model_name?: string;
+      model_revision?: string;
+    };
+    return {
+      ok: true,
+      latency_ms: Date.now() - t0,
+      ...(body.model_name ? { model_name: body.model_name } : {}),
+      ...(body.model_revision ? { model_revision: body.model_revision } : {}),
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+```
+
+- [ ] **Step 4: Wire em /api/health do server.ts**
+
+Em `packages/edge/src/api/server.ts`, dentro do handler de `/api/health`, após o bloco do `db` check e antes do loop de `getJobHealth()`:
+```typescript
+    // I4 + Onda 7: checks.reid sync (timeout 1s). REID_ENABLED=false →
+    // disabled flag e não degrada overall status.
+    const reidCheck = await pingReid(env.REID_BASE_URL, { disabled: !env.REID_ENABLED });
+    checks.reid = reidCheck;
+```
+
+Import no topo:
+```typescript
+import { pingReid } from "./reid/health.js";
+```
+
+- [ ] **Step 5: Run tests (pass)**
+
+```
+bun --filter '@vipcam/edge' test tests/unit/api/reid/health.test.ts
+bun --filter '@vipcam/edge' test  # full suite
+```
+Expected: 4 testes novos PASS + tudo o resto verde.
+
+- [ ] **Step 6: Verificação smoke local (manual, se Postgres + sidecar de pé)**
+
+```
+curl -s http://127.0.0.1:4000/api/health | jq .checks.reid
+```
+Esperado: `{ok:true, latency_ms:N, model_name:"buffalo_s", model_revision:"insightface-0.7.3"}` (com sidecar rodando) ou `{ok:false, error:"..."}` (sem sidecar). Não é gate de CI — só pra confirmar wiring.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/edge/src/api/reid/health.ts \
+        packages/edge/src/api/server.ts \
+        packages/edge/tests/unit/api/reid/health.test.ts
+git commit -m "feat(edge): Onda 7 — /api/health ganha checks.reid (sync ping, disabled flag pra REID_ENABLED=false)"
+```
+
+---
+
