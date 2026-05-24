@@ -46,6 +46,8 @@ Justificativa: gate da Onda 6 mostrou que rostos no frame inteiro (~87 px) ficam
 
 A regex anti-traversal no route `/snapshots/:filename` (hoje `^[a-zA-Z0-9_.-]+\.jpg$`) muda pra aceitar segmento de data: rota vira `/snapshots/:date/:filename` com duas validações Hono (date `^\d{4}-\d{2}-\d{2}$`, filename `^[a-zA-Z0-9-]+\.jpg$`).
 
+**Compatibilidade com path antigo:** pre-Onda-7 nenhuma detection tem `snapshot_path` populado (pipeline nunca escreveu); portanto não há paths antigos no formato flat a servir. A rota velha `/snapshots/:filename` pode ser **removida na mesma migration** sem 404 de URL real. UI hoje não constrói URLs `/snapshots/...` em lugar nenhum (apenas mostra placeholder). Aceitável remover a rota antiga.
+
 ### 2.4 Retention
 **30 dias**, cron diário 03:00 BRT no scheduler edge (mesmo módulo que hospeda `scheduler_checkins` e `scheduler_clients`). `find -mtime +30` no nível de diretório de dia. Job aparece em `getJobHealth()` → `checks.scheduler_snapshots` no `/api/health`.
 
@@ -131,12 +133,24 @@ Imagem dummy 64×64 vendorizada em `packages/reid/assets/warmup.jpg`. Sidecar fi
 ### 3.5 Failure mode: graceful degrade
 Quando `embed()` falha (timeout, 5xx, fetch error):
 - Pipeline continua. Snapshot é capturado e escrito normalmente.
-- `resolvePersonId` retorna `null`.
-- INSERT detection com `person_id=null` + `face_attrs.reid_status='unavailable'` + `face_attrs.reid_error=<message>`.
+- `resolvePersonId` tenta primeiro a **session-inheritance fallback** (abaixo); se ainda assim `null`, persiste sem identificação.
+- INSERT detection com `person_id=<inherited or null>` + `face_attrs.reid_status='unavailable'` + `face_attrs.reid_error=<message>`.
 - Log `warn` com a falha.
-- Nenhum `face_record` criado.
+- Nenhum `face_record` criado (sem embedding pra gravar).
 
 Reid volta → próxima detecção passa direto. Zero perda de dados de detecção (vs fail-hard, que perderia detections durante outage).
+
+**Session-inheritance fallback (recupera o caso comum):**
+
+Quando o sidecar falha, `resolveSessionId` ainda roda (não depende de reid). Se ele retorna uma sessão **já aberta** e essa sessão tem `person_id != null` de uma detection anterior (o reid funcionou pelo menos uma vez antes dessa sessão), herdamos esse `person_id` na detection nova. Custo: 1 SELECT que `resolveSessionId` já faz (lookup da sessão aberta). Recupera o cenário típico: sidecar pisca por alguns segundos enquanto uma pessoa está em frente da câmera (mesmo tracker, mesma sessão).
+
+Sem ser igual: se a sessão é nova ou a sessão aberta também não tem `person_id`, fica `null` mesmo.
+
+**Re-attribution debt (documentado, não-escopo desta onda):**
+
+Quando reid fica down por longos períodos, detections órfãs (sem `person_id` e sem `face_record`) acumulam. Match temporal pode resgatar parte (se cliente fez checkin na janela), mas an��nimos recorrentes ficam permanentemente desconectados — `embed()` não roda retroativo. Se MTTR do sidecar virar problema operacional recorrente (ex.: >1h por semana), Onda futura pode adicionar:
+- Sweep job que detecta clusters de detections órfãs com `snapshot_path` válido, dispara `embed()` retroativo, e atribui `person_id` em background.
+- Detections órfãs ficam visíveis no `/live` como anônimas — UX degrada graciosamente mas o sistema não para.
 
 ### 3.6 Versionamento de modelo
 `model_name` e `model_revision` são retornados pelo sidecar e gravados pelo edge em **cada** `face_record`. Permite mudar modelo no futuro sem invalidar face_records existentes em uma query — filtros `WHERE model_name=$current AND model_revision=$current` no SELECT de match descartam embeddings incompatíveis automaticamente.
@@ -152,7 +166,21 @@ Política inicial (Onda 7): `buffalo_s` / `insightface-0.7.3`. Re-embedding em b
 - ADD `model_name text NOT NULL DEFAULT 'buffalo_s'`
 - ADD `model_revision text NOT NULL DEFAULT 'insightface-0.7.3'`
 - ADD `det_score real` (qualidade do crop pra debug + filtrar matches contra crops ruins)
-- ALTER `embedding` SET NOT NULL (safe: tabela está vazia hoje porque Failover B nunca existiu)
+- ALTER `embedding` SET NOT NULL
+
+**Cláusula de segurança obrigatória da migration `embedding NOT NULL`:**
+```sql
+-- Guard: aborta se houver rows pré-existentes (Failover B nunca existiu
+-- antes da Onda 7, então o esperado é count=0).
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM face_records WHERE embedding IS NULL) > 0 THEN
+    RAISE EXCEPTION 'face_records tem rows com embedding NULL — abortando migration. Investigar antes.';
+  END IF;
+END$$;
+ALTER TABLE face_records ALTER COLUMN embedding SET NOT NULL;
+```
+Se um deploy futuro descobrir rows NULL (não previsto, mas defensivo), abortar e investigar manualmente em vez de DELETE silencioso.
 
 Índice HNSW já cobre `embedding`; queries de match filtram por `model_name`/`model_revision` no WHERE pós-ANN. Sem novo índice necessário.
 
@@ -174,13 +202,18 @@ notes                       text
 `faceRecordsRepo.insertAndEvict(person_id, payload)` transacional:
 ```
 BEGIN
+  -- Lock dos face_records existentes pra evitar race entre 2 inserts concorrentes
+  -- pra mesma person (pipeline atual é single-threaded — defensivo).
+  SELECT id FROM face_records WHERE person_id=$1 FOR UPDATE
   INSERT INTO face_records (...) RETURNING id
-  SELECT id FROM face_records WHERE person_id=$1 ORDER BY created_at DESC OFFSET 5
-  DELETE FROM face_records WHERE id IN (...)
+  DELETE FROM face_records
+    WHERE id IN (
+      SELECT id FROM face_records WHERE person_id=$1 ORDER BY created_at DESC OFFSET 5
+    )
 COMMIT
 ```
 
-Lógica em TS, unit-test com mocks de Drizzle. Sem trigger Postgres (segue padrão Drizzle-first do projeto).
+Lógica em TS, unit-test com mocks de Drizzle. Sem trigger Postgres (segue padrão Drizzle-first do projeto). `FOR UPDATE` é defensivo: pipeline atual processa eventos em série, mas se Onda futura paralelizar ingest, o eviction continua correto.
 
 ### 4.3 Match policy (ANN top-1 + dual threshold)
 ```sql
@@ -197,7 +230,14 @@ Decisão:
 | `dist ≤ 0.35` | **MATCH strict** (auto-link) | UPDATE persons.last_seen_at, total_visits+=1; INSERT face_record(person_id=match, is_primary=false); eviction FIFO |
 | `0.35 < dist ≤ 0.55` | **BORDERLINE** (review humana) | INSERT detection com person_id=null + face_attrs.reid_status='ambiguous' + reid_distance; INSERT reid_match_attempt(decision='ambiguous'); SEM face_record (humano decide) |
 | `dist > 0.55` | **PERSON NOVA** | INSERT persons(type='anonymous'); INSERT face_record(is_primary=true) |
-| (sem resultados — DB vazio) | **PERSON NOVA** | mesmo do `dist > 0.55` |
+| (zero rows do SELECT) | **PERSON NOVA** | mesmo do `dist > 0.55` |
+
+**Casos que produzem zero rows do SELECT** (todos tratados como "person nova"):
+1. Tabela `face_records` totalmente vazia (cold start do sistema).
+2. Tabela tem rows, mas TODAS com `model_name`/`model_revision` diferentes do current (cenário pós-troca de modelo — embeddings antigos ficam órfãos automaticamente; pessoas viram anônimas até serem re-vistas e re-embedidas naturalmente).
+3. Filtro do `model_name`/`model_revision` deixa o conjunto vazio por qualquer outra razão.
+
+Distância exatamente na borda usa `≤` em ambos limiares (não há ambiguidade aritmética; `dist=0.35` é strict, `dist=0.55` é borderline).
 
 Thresholds via ENV (`REID_DIST_STRICT=0.35`, `REID_DIST_LOOSE=0.55`) pra tuning empírico sem rebuild.
 
@@ -222,28 +262,75 @@ Nunca auto-link silencioso quando há divergência. Tabela usada: a já-existent
 
 ### 5.2 Person Merge transacional (hard merge)
 Quando humano resolve ambiguous "X é Y" no `/matches`:
-```
-BEGIN
-  UPDATE detections     SET person_id=Y WHERE person_id=X
-  UPDATE sessions       SET person_id=Y WHERE person_id=X
-  UPDATE face_records   SET person_id=Y WHERE person_id=X
-  -- eviction FIFO em Y se total>5
-  DELETE FROM face_records WHERE person_id=Y AND id IN
-    (SELECT id FROM face_records WHERE person_id=Y ORDER BY created_at DESC OFFSET 5)
-  UPDATE persons
-    SET total_visits = total_visits + (SELECT total_visits FROM persons WHERE id=X),
-        first_seen_at = LEAST(first_seen_at, (SELECT first_seen_at FROM persons WHERE id=X))
-    WHERE id=Y
-  INSERT INTO person_merge_audit (src_id, dst_id, merged_at, merged_by, src_snapshot)
-    VALUES (X, Y, now(), $user, row_to_json(X))
-  DELETE FROM persons WHERE id=X
-  -- CASCADE limpa reid_match_attempts.candidate_person_id refs
-COMMIT
+
+```sql
+BEGIN;
+
+-- 1. Lock atômico das DUAS rows de persons na ordem do id (anti-deadlock —
+--    sempre LEAST primeiro). Captura snapshot de X num CTE-equivalente para
+--    evitar leituras inconsistentes entre os UPDATEs posteriores.
+WITH locked AS (
+  SELECT id, total_visits, first_seen_at, last_seen_at,
+         row_to_json(persons.*) AS snapshot
+    FROM persons
+   WHERE id IN ($X, $Y)
+   ORDER BY id  -- ordem determinística pra prevenir deadlock entre operadores
+     FOR UPDATE
+),
+x_snap AS (SELECT * FROM locked WHERE id = $X),
+y_snap AS (SELECT * FROM locked WHERE id = $Y)
+SELECT 1;  -- materializa locks (CTEs em WITH não-executam sem SELECT)
+
+-- 2. Migra todas as refs de X pra Y.
+UPDATE detections   SET person_id = $Y WHERE person_id = $X;
+UPDATE sessions     SET person_id = $Y WHERE person_id = $X;
+UPDATE face_records SET person_id = $Y WHERE person_id = $X;
+
+-- 3. Eviction FIFO em Y se total > 5 (resultado da migração + face_records
+--    pré-existentes de Y).
+DELETE FROM face_records
+ WHERE id IN (
+   SELECT id FROM face_records
+    WHERE person_id = $Y
+    ORDER BY created_at DESC
+    OFFSET 5
+ );
+
+-- 4. Rollup das estatísticas de Y. Cada coluna trata o seu próprio caso de
+--    nullability — REGRA: toda coluna mergeada precisa ser NOT NULL ou usar
+--    COALESCE. As 3 abaixo são NOT NULL no schema atual (persons.ts:24-26).
+UPDATE persons
+   SET total_visits  = persons.total_visits + (SELECT total_visits FROM persons WHERE id = $X),
+       first_seen_at = LEAST(persons.first_seen_at,
+                             (SELECT first_seen_at FROM persons WHERE id = $X)),
+       last_seen_at  = GREATEST(persons.last_seen_at,
+                                (SELECT last_seen_at FROM persons WHERE id = $X)),
+       updated_at    = now()
+ WHERE id = $Y;
+
+-- 5. Audit ANTES do DELETE (snapshot completo de X preservado).
+INSERT INTO person_merge_audit (src_id, dst_id, merged_at, merged_by, src_snapshot)
+VALUES ($X, $Y, now(), $user,
+        (SELECT row_to_json(persons.*) FROM persons WHERE id = $X));
+
+-- 6. DELETE X. CASCADE em reid_match_attempts.candidate_person_id remove
+--    quaisquer rows pendentes apontando pra X (intencional: ambiguous
+--    referenciando uma person que não existe mais perde semântica).
+DELETE FROM persons WHERE id = $X;
+
+COMMIT;
 ```
 
-Helper `personsRepo.mergeInto(srcId, dstId)` compartilhado entre `resolveAmbiguous` (existente, match temporal) e `resolveReidAmbiguous` (novo).
+**Helper TS:** `personsRepo.mergeInto(srcId, dstId, userId)` em transação Drizzle única (`db.transaction(async tx => ...)`). Compartilhado entre `resolveAmbiguous` (existente, match temporal) e `resolveReidAmbiguous` (novo).
 
-Irreversível (sem undo). `person_merge_audit` permite reconstruir o que X tinha pra fins de auditoria, mas refs já viraram Y.
+**Regras invariantes documentadas no helper (comentário de cabeçalho):**
+- Lock sempre na ordem `LEAST(srcId, dstId), GREATEST(srcId, dstId)` pra prevenir deadlock entre dois operadores resolvendo merges sobrepostos.
+- Toda coluna nova adicionada ao rollup precisa ser NOT NULL no schema OU usar `COALESCE(...)` pra evitar `LEAST(NULL, x) = NULL` silencioso.
+- `last_seen_at` usa `GREATEST` (recência); `first_seen_at` usa `LEAST` (antiguidade); `total_visits` soma.
+
+**Irreversível (sem undo).** `person_merge_audit` permite reconstruir o que X tinha pra fins de auditoria (DBA pode rehidratar persons.X via `INSERT FROM src_snapshot`), mas refs já viraram Y — re-vincular detections/sessions/face_records pediria revert manual.
+
+**Race condition em ambiguous pendentes:** se dois operadores abrem o mesmo `match_attempt` no UI simultaneamente e ambos clicam resolver, o `FOR UPDATE` faz o segundo aguardar; quando libera, ele lê estado novo (X já não existe) e retorna erro "person não encontrada" — handler converte em HTTP 409 Conflict, UI refresh.
 
 ### 5.3 Endpoints novos
 - `GET /api/matches/reid/pending?limit=N` → lista `reid_match_attempts` com `decision='ambiguous'`, enriquecidos com snapshots de detection + candidate face_record + dados de ambos persons (X e Y). DESC por `decided_at`.
@@ -258,12 +345,21 @@ Componente side-by-side: snapshot da detection (esquerda) vs snapshot da candida
 
 Aproveita componentes existentes da aba temporal. Endpoint queries via React Query (já é o pattern pós-Onda 8).
 
+**Duas filas coexistem no `/matches` após esta onda:**
+- **Aba "Temporal"** (existente): match_attempts ambiguous gerados por checkin ERP que não conseguiu auto-link a uma detection única. Card mostra: detection + lista de checkins candidatos no intervalo ±5min. Decisão do operador: "esta detection é o cliente X" (auto-link erp_client_id) ou rejeitar.
+- **Aba "Reid borderline"** (nova): reid_match_attempts ambiguous gerados quando distance caiu na zona 0.35–0.55. Card mostra: detection nova + face_record candidato (mesma person ou outra). Decisão do operador: "mesma pessoa" (merge transacional) ou "pessoas diferentes" (mantém anônima nova).
+
+O operador distingue pelo título da aba e pelo formato do card. Ambas usam o helper `personsRepo.mergeInto` no backend quando a decisão envolve merge — o front-end só muda o endpoint chamado (`/api/matches/:id/resolve` vs `/api/matches/reid/:id/resolve`).
+
 ### 5.5 Feature flag `REID_ENABLED`
 Env var no edge, default `true` em prod (após validação). Quando `false`:
 - `resolvePersonId` mantém stub atual (sempre `null`).
 - Snapshot capture+write da Seção 2 **continua rodando** (parte é independente; resolve o problema do `/live` blank mesmo sem Failover B).
-- `/embed` não é chamado; `checks.reid` no health vira `{ok: true, disabled: true}`.
-- UI `/matches reid` ainda lista pendentes (residuais de operação prévia) mas pode mostrar banner "Reid desabilitado".
+- `/embed` não é chamado; `checks.reid` no health vira `{ok: true, disabled: true}` (status overall não degrada).
+- **`GET /api/matches/reid/pending`** continua respondendo normal e listando ambiguous residuais — operadores podem drenar a fila pendente.
+- **`POST /api/matches/reid/:id/resolve`** continua funcional — merges manuais ainda funcionam (não dependem de reid em runtime).
+- `face_records` e `reid_match_attempts` permanecem em disco — re-habilitar reid retoma do mesmo estado, sem perda.
+- UI mostra banner "Reid desabilitado — fila pendente de revisão (N items)" no topo da aba `/matches reid`.
 
 Permite rollback rápido se reid produzir matches ruins em produção.
 
@@ -334,9 +430,21 @@ SNAPSHOTS_DIR=/var/lib/vipcam/snapshots   # já existe; cita pra completeness
    - Abrir `/live` no browser → cards com rostos recortados.
 7. Monitorar `journalctl -u vipcam-edge -f | grep reid` por ~10min — calibração empírica dos thresholds começa aqui.
 
+### Calibração empírica (janela inicial)
+A Onda 7 entra em produção com `REID_DIST_STRICT=0.35` e `REID_DIST_LOOSE=0.55` derivados da literatura de InsightFace. Esses valores são **chutes** — calibração real acontece nos primeiros 7 dias:
+
+- **Inspecionar diariamente:** queries da semana anterior agrupadas por `reid_status` (strict/borderline/new/unavailable). Esperado: ~60–80% strict, ~10–20% borderline, ~10–30% new (ratio depende da renovação da base de pessoas).
+- **Triggers de ajuste:**
+  - **Borderline rate > 30% das detecções por 2+ dias** → loosen `REID_DIST_LOOSE` pra 0.60 (envia mais pra "person nova" automático em vez de borderline; reduz fila de revisão).
+  - **Strict matches contradizendo ERP > 10% das resoluções de ambiguous** → tighten `REID_DIST_STRICT` pra 0.30 (reid auto-linkando errado).
+  - **Strict matches < 30% e new > 50%** → loosen `REID_DIST_STRICT` pra 0.40 (reid muito conservador, pessoas conhecidas viram novas pra cada visita).
+- **Ajustes:** editar `/etc/vipcam/edge.env` + `systemctl restart vipcam-edge` (sem rebuild, sem novo deploy). Reflete em segundos.
+- **Onda fechada (§9):** após 7 dias estável, registra valores finais em `2026-05-20-onda-7-failover-b-report.md` com taxas observadas.
+
 ### Rollback
-- `REID_ENABLED=false` no edge.env + `systemctl restart vipcam-edge` → resolvePersonId volta a retornar null; snapshots continuam gravando (parte independente).
-- Hard rollback: `git revert <merge-onda-7>` + `./deploy.sh`.
+- **Soft:** `REID_ENABLED=false` no `edge.env` + `systemctl restart vipcam-edge` → `resolvePersonId` volta a retornar `null`; snapshots continuam gravando (parte independente). `face_records` e `reid_match_attempts` permanecem em disco — re-habilitar resume do mesmo estado.
+- **Trigger de soft rollback:** queue de borderline review > 100 items pendentes (operador não dá conta) OU strict-vs-ERP contradiction > 25%.
+- **Hard rollback:** `git revert <merge-onda-7>` + `./deploy.sh`. Migrations não são revertidas automaticamente (Drizzle não tem rollback); rows novas em `face_records.model_name` etc. ficam órfãs mas inertes (queries ignorando-as).
 
 ---
 
