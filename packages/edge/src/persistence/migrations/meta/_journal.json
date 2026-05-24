@@ -50,6 +50,13 @@
       "when": 1779660608740,
       "tag": "0006_early_alex_wilder",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1779660919236,
+      "tag": "0007_overjoyed_jackal",
+      "breakpoints": true
     }
   ]
 }

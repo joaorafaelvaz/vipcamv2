@@ -7,3 +7,4 @@ export * from "./sentiment-records.js";
 export * from "./erp-cache.js";
 export * from "./match-attempts.js";
 export * from "./reid-match-attempts.js";
+export * from "./person-merge-audit.js";
