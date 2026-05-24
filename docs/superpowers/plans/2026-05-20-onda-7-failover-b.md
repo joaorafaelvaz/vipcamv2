@@ -60,16 +60,14 @@
 
 ### Sidecar (`packages/reid/`)
 **Create:**
-- `assets/warmup.jpg` — imagem dummy 64×64 (gerada via Pillow ou commitada pré-pronta).
-- `tests/test_embed.py` — unit test do endpoint `/embed` via FastAPI TestClient.
+- `tests/test_embed.py` — unit tests dos endpoints `/embed` + `/warmup` + `/health` (extensão) via FastAPI TestClient.
 
 **Modify:**
-- `src/main.py` — adicionar `POST /embed` (bbox crop em PIL); bump version → `0.2.0`; expor `model_name`/`model_revision` em `/health` e `/embed`.
-- `pyproject.toml` (se existir) — bump version se rastreado lá.
+- `src/main.py` — adicionar `POST /embed` (bbox crop em PIL) + `POST /warmup` (idempotente, dispara model load); bump version → `0.2.0`; expor `model_name`/`model_revision` em `/health` e `/embed`.
 
 ### Infra (`infra/`)
 **Modify:**
-- `systemd/vipcam-reid.service.example` (ou `.service` se já real) — adicionar `ExecStartPost` de pre-warm + `ReadWritePaths` cobrindo `/opt/vipcamv2/packages/reid/assets`.
+- `systemd/vipcam-reid.service.example` — adicionar `ExecStartPost` apontando pra `POST /warmup` com `--fail` (validação real do pre-warm).
 
 ### Shared (`packages/shared/`)
 **Create:**
@@ -179,10 +177,13 @@ Abrir o `0005_*.sql` gerado. Encontrar:
 ```sql
 ALTER TABLE "face_records" ALTER COLUMN "embedding" SET NOT NULL;
 ```
-Prefixar com bloco DO $$ (mantenha o `--> statement-breakpoint` separator do Drizzle):
+Prefixar com um cabeçalho `-- HAND-EDITED (Onda 7)` + bloco DO $$ (mantenha o `--> statement-breakpoint` separator do Drizzle):
 ```sql
--- Onda 7 guard: aborta se houver rows pré-existentes com embedding NULL.
--- Failover B nunca foi populado pré-Onda-7, então o esperado é count=0.
+-- HAND-EDITED (Onda 7): este arquivo foi editado MANUALMENTE após `db:generate`
+-- pra inserir o guard abaixo. **NÃO re-rodar `db:generate` antes de commitar
+-- este arquivo** — drizzle-kit detecta mudança no schema TS e regera, perdendo
+-- o guard. Próximas migrations (Tasks 2/3) re-rodam db:generate, mas como
+-- elas tocam OUTRAS tabelas, este 0005 fica intocado pelo regen.
 DO $$
 BEGIN
   IF (SELECT count(*) FROM face_records WHERE embedding IS NULL) > 0 THEN
@@ -192,6 +193,8 @@ END$$;
 --> statement-breakpoint
 ALTER TABLE "face_records" ALTER COLUMN "embedding" SET NOT NULL;
 ```
+
+> **Importante:** se você precisar re-rodar `db:generate` por qualquer motivo antes de commit deste arquivo, **re-aplique o guard manualmente** ou faça backup do arquivo antes. O guard NÃO sobrevive sozinho — drizzle-kit não tem mecanismo pra preservar SQL custom em migrations regeradas. Este pattern (hand-edit migration) é raro no projeto; documentado aqui pra Onda 7.
 
 - [ ] **Step 7: Apply migration locally (DB-deferred OK se não houver Postgres local)**
 
@@ -440,15 +443,15 @@ git commit -m "feat(edge): Onda 7 — person_merge_audit (rastro do mergeInto)"
 
 ---
 
-### Task 4: Sidecar — endpoint POST /embed + metadata em /health
+### Task 4: Sidecar — POST /embed + POST /warmup + model metadata em /health
 
-**Spec ref:** §3.1 (request multipart `file` + bbox form fields; response inclui `model_name`/`model_revision`).
+**Spec ref:** §3.1 (`/embed` multipart + bbox form fields, response com `model_name`/`model_revision`); §3.3 (`/warmup` endpoint dedicado pra pre-warm).
 
 **Files:**
 - Modify: `packages/reid/src/main.py`
 - Test: `packages/reid/tests/test_embed.py` (criar)
 
-- [ ] **Step 1: Failing test**
+- [ ] **Step 1: Failing test (todos os testes do endpoint /embed + /warmup + /health)**
 
 `packages/reid/tests/test_embed.py`:
 ```python
@@ -500,6 +503,16 @@ def test_health_includes_model_metadata():
     assert body["model_revision"].startswith("insightface-")
 
 
+def test_warmup_returns_200_with_took_ms():
+    """`/warmup` é idempotente. Primeira chamada dispara model.prepare(),
+    subsequentes são no-op. Sempre retorna 200 com `warmed=True`."""
+    r = client.post("/warmup")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["warmed"] is True
+    assert body["took_ms"] >= 0
+
+
 @pytest.mark.skipif(
     not os.path.exists(FACE),
     reason="face.jpg fixture not provisioned (VPS step)",
@@ -531,28 +544,30 @@ def test_embed_returns_512d_vector_for_face_crop():
 ```
 cd packages/reid && pytest tests/test_embed.py -v
 ```
-Expected: /embed 404 + /health missing model_name.
+Expected: /embed 404 + /warmup 404 + /health missing model_name.
 
-- [ ] **Step 3: Implement /embed + extend /health**
+- [ ] **Step 3a: Extend imports**
 
-Em `packages/reid/src/main.py`:
-
-(a) Imports — atualizar para incluir Form e HTTPException:
+Em `packages/reid/src/main.py`, **extender** o import existente do FastAPI (manter `File`, `UploadFile`; adicionar `Form`, `HTTPException`):
 ```python
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 ```
 
-(b) Bump version + constants de modelo (depois do `app = FastAPI(...)`):
+- [ ] **Step 3b: Bump version + adicionar constants de modelo**
+
+Logo após `app = FastAPI(...)`, substituir por:
 ```python
 app = FastAPI(title="vipcam-reid", version="0.2.0")
 
+# Onda 7: trocar quando atualizar pip insightface — pra invalidar embeddings
+# antigos via WHERE clause no edge sem precisar re-migrar tabela.
 MODEL_NAME = "buffalo_s"
-# Trocar quando atualizar pip insightface — pra invalidar embeddings antigos
-# via WHERE clause no edge sem precisar re-migrar tabela.
 MODEL_REVISION = "insightface-0.7.3"
 ```
 
-(c) Atualizar HealthResponse + handler:
+- [ ] **Step 3c: Estender HealthResponse + handler**
+
+Substituir o `class HealthResponse` e o handler `health`:
 ```python
 class HealthResponse(BaseModel):
     status: str
@@ -571,7 +586,33 @@ async def health() -> HealthResponse:
     )
 ```
 
-(d) Adicionar EmbedResponse + handler /embed:
+- [ ] **Step 3d: Adicionar /warmup endpoint**
+
+Após o handler `health`, adicionar:
+```python
+class WarmupResponse(BaseModel):
+    warmed: bool
+    took_ms: int
+
+
+@app.post("/warmup", response_model=WarmupResponse)
+async def warmup() -> WarmupResponse:
+    """Força carga do modelo InsightFace (idempotente).
+
+    Usado pelo systemd ExecStartPost pra eliminar cold-start runtime.
+    Não recebe payload — sempre retorna 200 se _model() carrega com sucesso;
+    500 se o load falhar (paths errados, modelo missing, etc.) — sinal pro
+    systemd marcar unit como failed e disparar Restart=always.
+    """
+    t0 = time.monotonic()
+    _ = _model()  # idempotente — se _MODEL já setado, no-op
+    took_ms = int((time.monotonic() - t0) * 1000)
+    return WarmupResponse(warmed=True, took_ms=took_ms)
+```
+
+- [ ] **Step 3e: Adicionar /embed endpoint**
+
+Após o handler `warmup`, adicionar:
 ```python
 class EmbedResponse(BaseModel):
     embedding: list[float]  # 512 floats (normed)
@@ -632,7 +673,7 @@ async def embed(
 - [ ] **Step 4: Run tests (pass except face.jpg-skip)**
 
 `cd packages/reid && pytest tests/test_embed.py -v`
-Expected: 3 PASS + 1 SKIPPED.
+Expected: 4 PASS + 1 SKIPPED (test_embed_returns_512d).
 
 - [ ] **Step 5: Run /detect regression**
 
@@ -643,85 +684,56 @@ Expected: tests do /detect também passam (não quebramos nada).
 
 ```bash
 git add packages/reid/src/main.py packages/reid/tests/test_embed.py
-git commit -m "feat(reid): Onda 7 — POST /embed (crop pela bbox + embedding 512-d) + model metadata em /health"
+git commit -m "feat(reid): Onda 7 — POST /embed (crop pela bbox) + POST /warmup (pre-warm dedicado) + model metadata em /health"
 ```
 
 ---
 
-### Task 5: Sidecar — warmup.jpg + systemd ExecStartPost
+### Task 5: Systemd — ExecStartPost via /warmup
 
-**Spec ref:** §3.3 (pre-warm via `ExecStartPost` com imagem dummy 64×64 vendorizada).
+**Spec ref:** §3.3 (versão atualizada — pre-warm via `/warmup` endpoint dedicado, não `/embed` com asset).
 
 **Files:**
-- Create: `packages/reid/assets/warmup.jpg` (gerado via Pillow)
-- Create: `packages/reid/assets/README.md`
 - Modify: `infra/systemd/vipcam-reid.service.example`
 
-- [ ] **Step 1: Gerar warmup.jpg**
+> **Mudança de design vs draft inicial do plano:** abandonamos a ideia de vendorizar um `warmup.jpg` porque `/embed` com imagem sem rosto responde 422 corretamente — `curl --fail` veria isso como falha e systemd marcaria unit como failed. Solução: endpoint `/warmup` dedicado no sidecar (implementado em Task 4, Step 3d) que dispara `_model().prepare()` e retorna 200. ExecStartPost usa `--fail` contra esse endpoint — falha real (modelo não carrega) detectada, sucesso real (modelo warm) confirmado. Zero asset binário em git.
 
-```bash
-mkdir -p packages/reid/assets
-cd packages/reid
-python -c "from PIL import Image; Image.new('RGB',(64,64),color=(128,128,128)).save('assets/warmup.jpg','JPEG',quality=80)"
-ls -la assets/warmup.jpg  # ~1-2 KB
-```
+- [ ] **Step 1: Verificação manual local (smoke)**
 
-- [ ] **Step 2: Verificação manual local (smoke)**
-
+Pré-req: Task 4 commitada (sidecar tem `/warmup`).
 ```bash
 cd packages/reid
 uv run uvicorn src.main:app --port 5005 &
 SIDECAR_PID=$!
-sleep 8  # cold start
-curl -sf -F file=@assets/warmup.jpg -F x=0 -F y=0 -F w=64 -F h=64 \
-  http://127.0.0.1:5005/embed; echo
+sleep 1  # connect refused window
+curl -sf --retry 30 --retry-delay 1 --retry-connrefused \
+  -X POST http://127.0.0.1:5005/warmup
+echo "exit=$?"
 kill $SIDECAR_PID
 ```
-Expected: response 422 ("no face detected") — esperado pra imagem cinza. **O importante é que o ciclo cold-start completou** (modelo carregou). Em prod o ExecStartPost ignora HTTP status — só checa exit code (transport).
+Expected: `{"warmed":true,"took_ms":N}` onde N pode ser ~5500 (primeira vez) ou ~1 (subsequente). `exit=0` (curl --fail HTTP 200).
 
-- [ ] **Step 3: Atualizar systemd unit**
+- [ ] **Step 2: Atualizar systemd unit**
 
-Em `infra/systemd/vipcam-reid.service.example`, dentro do `[Service]`:
+Em `infra/systemd/vipcam-reid.service.example`, dentro do `[Service]`, adicionar APÓS `ExecStart=...`:
 ```ini
-# Onda 7 §3.3: pre-warm forçado. Sem isso, primeira /embed em runtime
-# sofre ~5,5s de cold-start. 422 é resposta válida pra imagem cinza chapada
-# — checamos só transport-level (curl exit code), não HTTP status.
-ExecStartPost=/usr/bin/curl --silent --output /dev/null \
+# Onda 7 §3.3: pre-warm via /warmup (endpoint dedicado idempotente).
+# Sem isso, primeira /embed em runtime sofre ~5,5s de cold-start. Usamos
+# --fail aqui — se /warmup retornar 500 (modelo falha em carregar), o
+# systemd marca o unit como failed e Restart=always tenta de novo.
+# --retry 30 + --retry-connrefused absorve a janela de boot do uvicorn.
+ExecStartPost=/usr/bin/curl --fail --silent --output /dev/null \
     --retry 30 --retry-delay 1 --retry-connrefused \
-    -F file=@/opt/vipcamv2/packages/reid/assets/warmup.jpg \
-    -F x=0 -F y=0 -F w=64 -F h=64 \
-    http://127.0.0.1:5005/embed
-
-# Permite leitura do asset pelo curl (defensivo, sob WorkingDirectory).
-ReadOnlyPaths=/opt/vipcamv2/packages/reid/assets
+    -X POST http://127.0.0.1:5005/warmup
 ```
 
-- [ ] **Step 4: Criar README do asset**
+> **Não adicionar `ReadOnlyPaths`** — `/warmup` é POST sem payload, não precisa de filesystem access além do que o ExecStart já tem. (Draft anterior adicionava `ReadOnlyPaths=/opt/vipcamv2/packages/reid/assets` — no-op redundante com `ProtectSystem=strict` que já está no unit, e sem asset pra proteger agora.)
 
-`packages/reid/assets/README.md`:
-```markdown
-# warmup.jpg
-
-Imagem cinza chapada 64×64 usada pelo `ExecStartPost` do systemd unit
-`vipcam-reid.service` para forçar carga do modelo InsightFace antes do
-sidecar ser marcado como ativo. Sem isso, primeira `/embed` em runtime
-sofre ~5,5s de cold-start.
-
-Conteúdo intencional: imagem **sem rosto**. `/embed` responde HTTP 422; o
-que importa é o transport-level success do curl (exit code), não o status.
-
-Regenerar (se corromper):
-\`\`\`sh
-python -c "from PIL import Image; Image.new('RGB',(64,64),color=(128,128,128)).save('warmup.jpg','JPEG',quality=80)"
-\`\`\`
-```
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add packages/reid/assets/warmup.jpg packages/reid/assets/README.md \
-        infra/systemd/vipcam-reid.service.example
-git commit -m "feat(reid): Onda 7 — warmup.jpg + ExecStartPost pré-aquece InsightFace"
+git add infra/systemd/vipcam-reid.service.example
+git commit -m "feat(reid): Onda 7 — ExecStartPost via POST /warmup (--fail + retry-connrefused)"
 ```
 
 ---
@@ -751,7 +763,13 @@ export interface EmbedResult {
   model_revision: string;
 }
 
-/** Bbox sub-conjunto do frame (px integers, retangular). */
+/**
+ * Bbox sub-conjunto do frame (retangular). Valores são em pixels do frame de
+ * origem. O sidecar Python espera **inteiros** (FastAPI `Form(...)` com type
+ * `int` rejeita floats), então o caller no edge deve aplicar `Math.floor()`
+ * em cada componente antes de chamar `embed()` — bbox do evento Dahua já vem
+ * inteiro, mas qualquer transformação intermediária deve preservar isso.
+ */
 export interface BBox {
   x: number;
   y: number;
@@ -860,7 +878,7 @@ describe("reid-client.embed", () => {
       );
     }) as typeof globalThis.fetch;
     await embed("http://x", Buffer.from(""), { x: 0, y: 0, w: 1, h: 1 });
-    expect(receivedSignal).toBeDefined(); // AbortSignal.timeout(3000) anexado
+    expect(receivedSignal).toBeInstanceOf(AbortSignal);
   });
 });
 ```
