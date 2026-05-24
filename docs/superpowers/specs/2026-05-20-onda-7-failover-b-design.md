@@ -357,7 +357,9 @@ const [leastId, greatestId] =
 Auth: `apiKeyMiddleware` herdado via `app.use("/api/matches/*", requireKey)`.
 
 ### 5.4 UI: aba "Reid borderline" no `/matches`
-Componente side-by-side: snapshot da detection (esquerda) vs snapshot da candidate face_record (direita), com distance + det_scores. Dois botões: **"Mesma pessoa"** (merge) e **"Pessoas diferentes"** (reject).
+Componente side-by-side: snapshot da detection (esquerda) vs snapshot da candidate face_record (direita), com a **distance** cosine exibida. Dois botões: **"Mesma pessoa"** (merge) e **"Pessoas diferentes"** (reject).
+
+> Nota: `det_score` é gravado em `face_records` por design (§4.1) pra debug + futura filtragem de matches contra crops ruins, mas **não** é exposto na UI da Onda 7. ReidMatchPendingEnriched intencionalmente exclui esse campo.
 
 Aproveita componentes existentes da aba temporal. Endpoint queries via React Query (já é o pattern pós-Onda 8).
 

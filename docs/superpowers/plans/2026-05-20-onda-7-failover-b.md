@@ -4138,9 +4138,10 @@ git commit -m "feat(web): Onda 7 — useReidPending + useResolveReid hooks"
 
 `packages/web/tests/unit/components/reid-match-card.test.tsx`:
 ```typescript
+// Usa fireEvent direto (não user-event) — @testing-library/user-event não
+// está nas deps; fireEvent é parte do @testing-library/react já instalado.
 import { describe, expect, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ReidMatchPendingEnriched } from "@vipcam/shared";
 import * as React from "react";
 import { ReidMatchCard } from "../../../src/components/reid-match-card";
@@ -4170,7 +4171,17 @@ describe("ReidMatchCard", () => {
     expect(screen.getByText("João Cliente")).toBeDefined();
     expect(screen.getByText(/0\.45/)).toBeDefined();
     const images = screen.getAllByRole("img");
-    expect(images.length).toBe(2); // detection + candidate
+    expect(images.length).toBe(2);
+  });
+
+  test("renders fallback 'sem snapshot' divs when snapshot_path is null", () => {
+    const noSnap: ReidMatchPendingEnriched = {
+      ...item,
+      detection: { ...item.detection, snapshot_path: null },
+    };
+    render(<ReidMatchCard item={noSnap} onResolve={() => {}} loading={false} />);
+    const semSnaps = screen.getAllByText(/sem snapshot/i);
+    expect(semSnaps.length).toBeGreaterThanOrEqual(1);
   });
 
   test("disabled buttons when loading=true", () => {
@@ -4179,8 +4190,7 @@ describe("ReidMatchCard", () => {
     for (const b of buttons) expect((b as HTMLButtonElement).disabled).toBe(true);
   });
 
-  test("fires onResolve with 'matched_to_candidate' when 'Mesma pessoa' clicked", async () => {
-    const user = userEvent.setup();
+  test("fires onResolve with 'matched_to_candidate' when 'Mesma pessoa' clicked", () => {
     let received: { id: string; decision: string } | null = null;
     render(
       <ReidMatchCard
@@ -4191,12 +4201,11 @@ describe("ReidMatchCard", () => {
         loading={false}
       />,
     );
-    await user.click(screen.getByText(/mesma pessoa/i));
+    fireEvent.click(screen.getByText(/mesma pessoa/i));
     expect(received).toEqual({ id: "rma-1", decision: "matched_to_candidate" });
   });
 
-  test("fires onResolve with 'rejected_new_person' when 'Pessoas diferentes' clicked", async () => {
-    const user = userEvent.setup();
+  test("fires onResolve with 'rejected_new_person' when 'Pessoas diferentes' clicked", () => {
     let received: { id: string; decision: string } | null = null;
     render(
       <ReidMatchCard
@@ -4207,7 +4216,7 @@ describe("ReidMatchCard", () => {
         loading={false}
       />,
     );
-    await user.click(screen.getByText(/pessoas diferentes/i));
+    fireEvent.click(screen.getByText(/pessoas diferentes/i));
     expect(received).toEqual({ id: "rma-1", decision: "rejected_new_person" });
   });
 });
@@ -4424,8 +4433,7 @@ export default function MatchesPage() {
 }
 ```
 
-> **Pré-requisito:** componente Tabs do shadcn. Se não existir, gerar via shadcn-ui CLI:
-> `bunx shadcn-ui@latest add tabs`
+> **Pré-requisito:** componente Tabs do shadcn. **Verificado:** `packages/web/src/components/ui/tabs.tsx` já existe no repo (gerado em onda anterior; `@radix-ui/react-tabs` já em deps). Skip qualquer `bunx shadcn-ui add` — só importar e usar.
 
 - [ ] **Step 2: Build + smoke manual**
 
@@ -4444,8 +4452,7 @@ Expected: tests existentes + os 6 novos (Task 19w+20w) verdes (modulo flickiness
 - [ ] **Step 4: Commit**
 
 ```bash
-git add packages/web/src/app/matches/page.tsx \
-        packages/web/src/components/ui/tabs.tsx
+git add packages/web/src/app/matches/page.tsx
 git commit -m "feat(web): Onda 7 — /matches ganha aba Reid borderline (tabs Temporal/Reid)"
 ```
 
