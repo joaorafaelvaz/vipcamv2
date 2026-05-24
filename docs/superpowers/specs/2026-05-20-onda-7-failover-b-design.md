@@ -106,7 +106,7 @@ export async function embed(
 ### 3.3 Cold start: pre-warm via `/warmup` endpoint + `ExecStartPost`
 **Novo endpoint sidecar:** `POST /warmup` — dispara `_model().prepare(...)` (idempotente — se já está carregado, no-op) e retorna `200 {"warmed": true, "took_ms": N}`. Não recebe payload. Independente de `/embed` (que precisa de uma imagem com rosto detectável pra responder 200) — pode ser invocado sem assets de imagem.
 
-Sistemd unit `infra/systemd/vipcam-reid.service` ganha:
+Systemd unit `infra/systemd/vipcam-reid.service` ganha:
 ```
 ExecStartPost=/usr/bin/curl --fail --silent --output /dev/null \
     --retry 30 --retry-delay 1 --retry-connrefused \

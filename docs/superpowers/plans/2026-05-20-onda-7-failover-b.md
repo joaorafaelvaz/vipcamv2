@@ -958,3 +958,662 @@ git commit -m "feat(edge): Onda 7 — reid-client.embed() + EmbedResult/BBox/Rei
 
 ---
 
+## Chunk 2: Snapshot persistence + retention
+
+Resolve o problema do `/live` blank em produção (independente do reid em si — funciona mesmo com `REID_ENABLED=false`). Adiciona helpers de write/prune de snapshots em disco, atualiza route `/snapshots/:date/:filename`, registra job de retention no scheduler. Também declara as ENV vars do Failover B no `env.ts` (consumidas em Chunks 3+).
+
+**Tasks neste chunk:** 7-10
+**Sequenciamento:** Task 7 (env vars) primeiro; outras podem ser paralelas mas commits separados. Task 10 depende de Task 8 (`pruneOlderThan`).
+
+---
+
+### Task 7: ENV vars — REID_ENABLED / REID_DIST_STRICT / REID_DIST_LOOSE / SNAPSHOTS_DIR
+
+**Spec ref:** §4.3 (thresholds via ENV pra tuning empírico); §5.5 (`REID_ENABLED`); §8 (deploy steps menciona vars novos).
+
+**Files:**
+- Modify: `packages/edge/src/config/env.ts`
+- Test: `packages/edge/tests/unit/config/env-reid.test.ts`
+
+- [ ] **Step 1: Failing test**
+
+`packages/edge/tests/unit/config/env-reid.test.ts`:
+```typescript
+import { describe, expect, test } from "bun:test";
+import { parseEnv } from "../../../src/config/env.js";
+
+const BASE = {
+  API_KEY: "test-key",
+};
+
+describe("env Onda 7 vars", () => {
+  test("REID_ENABLED defaults to true", () => {
+    expect(parseEnv(BASE).REID_ENABLED).toBe(true);
+  });
+
+  test("REID_ENABLED accepts 'false'", () => {
+    expect(parseEnv({ ...BASE, REID_ENABLED: "false" }).REID_ENABLED).toBe(false);
+  });
+
+  test("REID_ENABLED accepts 'true'", () => {
+    expect(parseEnv({ ...BASE, REID_ENABLED: "true" }).REID_ENABLED).toBe(true);
+  });
+
+  test("REID_DIST_STRICT defaults to 0.35", () => {
+    expect(parseEnv(BASE).REID_DIST_STRICT).toBe(0.35);
+  });
+
+  test("REID_DIST_LOOSE defaults to 0.55", () => {
+    expect(parseEnv(BASE).REID_DIST_LOOSE).toBe(0.55);
+  });
+
+  test("REID_DIST_STRICT rejects > REID_DIST_LOOSE (refine)", () => {
+    expect(() =>
+      parseEnv({ ...BASE, REID_DIST_STRICT: "0.6", REID_DIST_LOOSE: "0.5" }),
+    ).toThrow(/REID_DIST_STRICT.*REID_DIST_LOOSE/);
+  });
+
+  test("REID_BASE_URL defaults to http://127.0.0.1:5005", () => {
+    expect(parseEnv(BASE).REID_BASE_URL).toBe("http://127.0.0.1:5005");
+  });
+
+  test("SNAPSHOTS_DIR defaults to /var/lib/vipcam/snapshots", () => {
+    expect(parseEnv(BASE).SNAPSHOTS_DIR).toBe("/var/lib/vipcam/snapshots");
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail)**
+
+`bun --filter '@vipcam/edge' test tests/unit/config/env-reid.test.ts`
+Expected: `REID_ENABLED` undefined etc.
+
+- [ ] **Step 3: Add vars to envSchema**
+
+Em `packages/edge/src/config/env.ts`, dentro do `z.object({ ... })`:
+```typescript
+    // Onda 7 — Failover B
+    REID_ENABLED: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((v) => v === "true"),
+    REID_BASE_URL: z.string().url().default("http://127.0.0.1:5005"),
+    // Thresholds via ENV pra calibração empírica sem rebuild — ver spec §4.3.
+    REID_DIST_STRICT: z.coerce.number().min(0).max(2).default(0.35),
+    REID_DIST_LOOSE: z.coerce.number().min(0).max(2).default(0.55),
+    SNAPSHOTS_DIR: z.string().min(1).default("/var/lib/vipcam/snapshots"),
+```
+
+E atualizar o `.refine(...)` final (substituir por um `.superRefine` ou encadear outro `.refine`):
+```typescript
+  .refine(
+    (v) =>
+      (v.CAMERA_IP && v.CAMERA_USER && v.CAMERA_PASS) ||
+      (!v.CAMERA_IP && !v.CAMERA_USER && !v.CAMERA_PASS),
+    { message: "CAMERA_IP/USER/PASS must be all set or all unset" },
+  )
+  .refine((v) => v.REID_DIST_STRICT < v.REID_DIST_LOOSE, {
+    message: "REID_DIST_STRICT must be < REID_DIST_LOOSE (strict < borderline boundary)",
+  });
+```
+
+- [ ] **Step 4: Run test (pass)**
+
+`bun --filter '@vipcam/edge' test tests/unit/config/env-reid.test.ts` → 8 PASS.
+
+- [ ] **Step 5: Verificar resto dos testes de env não quebraram**
+
+`bun --filter '@vipcam/edge' test tests/unit/config/`
+Expected: tests pré-existentes (se houver) ainda passam.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/edge/src/config/env.ts \
+        packages/edge/tests/unit/config/env-reid.test.ts
+git commit -m "feat(edge): Onda 7 — ENV vars REID_ENABLED/DIST_STRICT/DIST_LOOSE/BASE_URL/SNAPSHOTS_DIR"
+```
+
+---
+
+### Task 8: Snapshot-store — saveCrop + pruneOlderThan
+
+**Spec ref:** §2.2 (layout `snapshots/YYYY-MM-DD/<detection-uuid>.jpg`), §2.3 (path relativo), §2.4 (retention via `find -mtime`).
+
+**Files:**
+- Create: `packages/edge/src/api/reid/snapshot-store.ts`
+- Test: `packages/edge/tests/unit/api/reid/snapshot-store.test.ts`
+
+- [ ] **Step 1: Failing test**
+
+`packages/edge/tests/unit/api/reid/snapshot-store.test.ts`:
+```typescript
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { pruneOlderThan, saveCrop } from "../../../../src/api/reid/snapshot-store.js";
+
+let tmpDir: string;
+
+beforeEach(async () => {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "snap-store-test-"));
+});
+afterEach(async () => {
+  await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
+describe("saveCrop", () => {
+  test("writes file to YYYY-MM-DD/<id>.jpg and returns relative path", async () => {
+    const buf = Buffer.from([0xff, 0xd8, 0xff, 0xe0]); // JPEG magic prefix
+    const relPath = await saveCrop({
+      baseDir: tmpDir,
+      detectionId: "abc-123",
+      detectedAt: new Date("2026-05-20T14:30:00Z"),
+      jpegBytes: buf,
+    });
+    expect(relPath).toBe("2026-05-20/abc-123.jpg");
+    const written = await fs.readFile(path.join(tmpDir, relPath));
+    expect(Buffer.compare(written, buf)).toBe(0);
+  });
+
+  test("creates date directory on demand (mkdir -p)", async () => {
+    await saveCrop({
+      baseDir: tmpDir,
+      detectionId: "x",
+      detectedAt: new Date("2026-06-01T00:00:00Z"),
+      jpegBytes: Buffer.from([0]),
+    });
+    const stat = await fs.stat(path.join(tmpDir, "2026-06-01"));
+    expect(stat.isDirectory()).toBe(true);
+  });
+
+  test("uses UTC for date segment (not local TZ)", async () => {
+    // 2026-05-20T01:00:00-03:00 = 2026-05-20T04:00:00Z → UTC date = 2026-05-20
+    // BUT: 2026-05-20T23:30:00-03:00 = 2026-05-21T02:30:00Z → UTC date = 2026-05-21
+    const relPath = await saveCrop({
+      baseDir: tmpDir,
+      detectionId: "edge",
+      detectedAt: new Date("2026-05-21T02:30:00Z"),
+      jpegBytes: Buffer.from([0]),
+    });
+    expect(relPath.startsWith("2026-05-21/")).toBe(true);
+  });
+});
+
+describe("pruneOlderThan", () => {
+  test("deletes date-prefixed dirs older than N days", async () => {
+    // Cria 3 pastas: 40d atrás (apagar), 20d (manter), hoje (manter)
+    const today = new Date();
+    const mkOldDir = async (daysAgo: number) => {
+      const d = new Date(today.getTime() - daysAgo * 86400_000);
+      const name = d.toISOString().slice(0, 10);
+      const full = path.join(tmpDir, name);
+      await fs.mkdir(full, { recursive: true });
+      await fs.writeFile(path.join(full, "fake.jpg"), Buffer.from([0]));
+      // Backdating: setattr mtime usando utimes
+      await fs.utimes(full, d, d);
+    };
+    await mkOldDir(40);
+    await mkOldDir(20);
+    await mkOldDir(0);
+
+    const deleted = await pruneOlderThan({ baseDir: tmpDir, days: 30 });
+    expect(deleted).toBe(1);
+
+    const remaining = await fs.readdir(tmpDir);
+    expect(remaining.length).toBe(2);
+  });
+
+  test("ignores non-date dirs (defense-in-depth)", async () => {
+    // mkdir 'tmp' (não-date format), backdated 60d
+    const odd = path.join(tmpDir, "lost+found");
+    await fs.mkdir(odd, { recursive: true });
+    const past = new Date(Date.now() - 60 * 86400_000);
+    await fs.utimes(odd, past, past);
+
+    const deleted = await pruneOlderThan({ baseDir: tmpDir, days: 30 });
+    expect(deleted).toBe(0); // não tocou em lost+found
+    const remaining = await fs.readdir(tmpDir);
+    expect(remaining).toContain("lost+found");
+  });
+
+  test("baseDir não existe → retorna 0 sem throw (graceful)", async () => {
+    const deleted = await pruneOlderThan({
+      baseDir: path.join(tmpDir, "doesnt-exist"),
+      days: 30,
+    });
+    expect(deleted).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — module não existe)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/reid/snapshot-store.test.ts`
+
+- [ ] **Step 3: Implement snapshot-store**
+
+`packages/edge/src/api/reid/snapshot-store.ts`:
+```typescript
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+
+/** Path relativo a SNAPSHOTS_DIR. Forma: 'YYYY-MM-DD/<detection-id>.jpg'. */
+export type RelativeSnapshotPath = string;
+
+export interface SaveCropParams {
+  baseDir: string;
+  detectionId: string;
+  detectedAt: Date;
+  jpegBytes: Buffer;
+}
+
+/** Regex que casa nomes de pasta no formato ISO date (UTC) — usado pelo prune
+ * pra ignorar lixo (`lost+found`, manual debug dirs etc.). */
+const DATE_DIR_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Escreve crop JPEG em `<baseDir>/YYYY-MM-DD/<detection-id>.jpg`.
+ * mkdir -p garante dir existe. Retorna o path relativo (formato armazenado
+ * em `detections.snapshot_path` e usado na URL `/snapshots/:date/:filename`).
+ *
+ * Data deriva de `detectedAt` UTC — NÃO TZ local — pra evitar split-day em
+ * boundary (eg 23:30 BRT em 20 vira 02:30 UTC em 21 → pasta 21, consistente
+ * com `detected_at` armazenado no DB também UTC).
+ */
+export async function saveCrop(params: SaveCropParams): Promise<RelativeSnapshotPath> {
+  const { baseDir, detectionId, detectedAt, jpegBytes } = params;
+  const dateSeg = detectedAt.toISOString().slice(0, 10); // 'YYYY-MM-DD' (UTC)
+  const dirFull = path.join(baseDir, dateSeg);
+  await fs.mkdir(dirFull, { recursive: true });
+  const fileFull = path.join(dirFull, `${detectionId}.jpg`);
+  await fs.writeFile(fileFull, jpegBytes);
+  return `${dateSeg}/${detectionId}.jpg`;
+}
+
+export interface PruneParams {
+  baseDir: string;
+  days: number;
+}
+
+/**
+ * Retention: apaga pastas YYYY-MM-DD com mtime mais velho que `days`.
+ *
+ * Filtra por regex pra não tocar em dirs alheios (`lost+found`, snapshots de
+ * outro release de design, etc.). Se baseDir não existe (cold start em VPS),
+ * retorna 0 silently — scheduler-health pega via no-throw success.
+ */
+export async function pruneOlderThan(params: PruneParams): Promise<number> {
+  const { baseDir, days } = params;
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(baseDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw err;
+  }
+  const cutoff = Date.now() - days * 86400_000;
+  let deleted = 0;
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (!DATE_DIR_RE.test(e.name)) continue;
+    const full = path.join(baseDir, e.name);
+    const stat = await fs.stat(full);
+    if (stat.mtimeMs < cutoff) {
+      await fs.rm(full, { recursive: true, force: true });
+      deleted += 1;
+    }
+  }
+  return deleted;
+}
+```
+
+- [ ] **Step 4: Run test (pass)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/reid/snapshot-store.test.ts` → 6 PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/edge/src/api/reid/snapshot-store.ts \
+        packages/edge/tests/unit/api/reid/snapshot-store.test.ts
+git commit -m "feat(edge): Onda 7 — snapshot-store (saveCrop UTC-date + pruneOlderThan)"
+```
+
+---
+
+### Task 9: Route /snapshots/:date/:filename (multi-segment + anti-traversal)
+
+**Spec ref:** §2.3 (rota muda, regex valida date + filename; route antigo flat pode ser removido porque pré-Onda-7 nenhum detection.snapshot_path foi populado).
+
+**Files:**
+- Modify: `packages/edge/src/api/routes/snapshots.ts`
+- Modify: `packages/edge/src/api/server.ts` (atualizar caller pra passar `<date>/<filename>`)
+- Test: `packages/edge/tests/unit/api/routes/snapshots-date.test.ts`
+
+- [ ] **Step 1: Failing test**
+
+`packages/edge/tests/unit/api/routes/snapshots-date.test.ts`:
+```typescript
+import { describe, expect, test } from "bun:test";
+import { createSnapshotsRoutes } from "../../../../src/api/routes/snapshots.js";
+
+function app(read: (rel: string) => Promise<Uint8Array | null>) {
+  return createSnapshotsRoutes({ readSnapshot: read });
+}
+
+describe("snapshots route /:date/:filename (Onda 7)", () => {
+  test("valid date + filename → 200 + image/jpeg", async () => {
+    let received = "";
+    const r = await app(async (rel) => {
+      received = rel;
+      return new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+    }).request("/2026-05-20/abc-def-123.jpg");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toBe("image/jpeg");
+    expect(received).toBe("2026-05-20/abc-def-123.jpg");
+  });
+
+  test("404 when readSnapshot returns null", async () => {
+    const r = await app(async () => null).request("/2026-05-20/missing.jpg");
+    expect(r.status).toBe(404);
+  });
+
+  test("400 invalid date segment", async () => {
+    const r = await app(async () => null).request("/not-a-date/x.jpg");
+    expect(r.status).toBe(400);
+  });
+
+  test("400 invalid filename segment (non-UUID-ish)", async () => {
+    const r = await app(async () => null).request("/2026-05-20/file..with..dots.jpg");
+    expect(r.status).toBe(400);
+  });
+
+  test("400 path traversal attempt date segment", async () => {
+    const r = await app(async () => null).request("/2026-05-20/..%2F..%2Fetc%2Fpasswd");
+    // Hono decodifica → param vira '../../etc/passwd' → fail regex
+    expect(r.status).toBe(400);
+  });
+
+  test("400 path traversal attempt date segment v2", async () => {
+    const r = await app(async () => null).request("/..%2F..%2F2026-05-20/abc.jpg");
+    expect(r.status).toBe(400);
+  });
+
+  test("legacy flat route /:filename returns 400 (sem date segment, intencionalmente removido)", async () => {
+    const r = await app(async () => null).request("/old-flat.jpg");
+    // Hono: nenhuma rota casa /:filename direto → 404 do Hono
+    // Aceitamos 404 (rota inexistente) OU 400 (regex falhou) — qualquer um confirma que o legacy quebrou.
+    expect([400, 404]).toContain(r.status);
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — rota velha aceita /:filename)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/routes/snapshots-date.test.ts`
+Expected: testes da rota antiga passam acidentalmente (path `/2026-05-20/abc.jpg` é interpretado como filename = `2026-05-20/abc.jpg`, falha regex VALID_FILENAME). Maioria dos novos falha.
+
+- [ ] **Step 3: Rewrite snapshots route**
+
+Substituir `packages/edge/src/api/routes/snapshots.ts`:
+```typescript
+import { Hono } from "hono";
+
+export interface SnapshotsDeps {
+  /** Lê bytes do filesystem. `relativePath` é o valor armazenado em
+   * detections.snapshot_path: 'YYYY-MM-DD/<detection-uuid>.jpg'. */
+  readSnapshot: (relativePath: string) => Promise<Uint8Array | null>;
+}
+
+// Anti path traversal: dois segmentos validados separadamente.
+const VALID_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const VALID_FILENAME = /^[a-zA-Z0-9-]+\.jpg$/;
+
+/**
+ * Endpoint público (sem auth — nginx restringe LAN) que serve snapshots
+ * JPEG sob layout `snapshots/YYYY-MM-DD/<detection-uuid>.jpg`.
+ *
+ * Onda 7 §2.3: substitui rota flat `/snapshots/:filename` que existia desde
+ * Onda 3. Pré-Onda-7 nenhuma detection tinha snapshot_path populado, então
+ * remover a rota antiga não-quebra URLs reais.
+ *
+ * Validação anti-traversal: regex em CADA segmento. Hono decodifica %2F
+ * em / antes de matchar params, então qualquer ../../etc/passwd cai aqui.
+ */
+export function createSnapshotsRoutes(deps: SnapshotsDeps): Hono {
+  const r = new Hono();
+
+  r.get("/:date/:filename", async (c) => {
+    const date = c.req.param("date");
+    const filename = c.req.param("filename");
+    if (
+      !VALID_DATE.test(date) ||
+      !VALID_FILENAME.test(filename) ||
+      filename.includes("..") ||
+      date.includes("..")
+    ) {
+      return c.json({ error: "invalid_path" }, 400);
+    }
+    const relativePath = `${date}/${filename}`;
+    const bytes = await deps.readSnapshot(relativePath);
+    if (!bytes) return c.json({ error: "not_found" }, 404);
+    // C1: bytes pode ser uma VIEW num buffer maior (fs.readFile retorna
+    // Buffer do pool interno do Node pra files <8KB). Slice exato copia
+    // só este arquivo (evita leak de memória adjacente num endpoint sem auth).
+    const body = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer;
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "image/jpeg",
+        "cache-control": "public, max-age=86400, immutable",
+      },
+    });
+  });
+
+  return r;
+}
+```
+
+- [ ] **Step 4: Run test (pass)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/routes/snapshots-date.test.ts` → 7 PASS.
+
+- [ ] **Step 5: Atualizar server.ts pra passar relativePath ao readFile**
+
+Em `packages/edge/src/api/server.ts`, encontrar o mount de `/snapshots` (próximo ao final do `createServer`) e atualizar o caller pra trabalhar com o relativePath completo:
+```typescript
+const SNAPSHOTS_DIR = env.SNAPSHOTS_DIR;  // antes era process.env.SNAPSHOTS_DIR ?? "..."
+app.route(
+  "/snapshots",
+  createSnapshotsRoutes({
+    readSnapshot: async (relativePath) => {
+      const fullPath = path.join(SNAPSHOTS_DIR, relativePath);
+      try {
+        return await fs.readFile(fullPath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw err;
+      }
+    },
+  }),
+);
+```
+
+> **Importante:** `path.join(SNAPSHOTS_DIR, relativePath)` é seguro pós-regex (`..` rejeitado upstream). Não usar `path.resolve` (que poderia normalizar `..` se entrasse).
+
+- [ ] **Step 6: Run all edge tests (sanity)**
+
+`bun --filter '@vipcam/edge' test`
+Expected: tudo verde, sem regressão.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/edge/src/api/routes/snapshots.ts \
+        packages/edge/src/api/server.ts \
+        packages/edge/tests/unit/api/routes/snapshots-date.test.ts
+git commit -m "feat(edge): Onda 7 — /snapshots/:date/:filename (multi-segment + remoção do route flat)"
+```
+
+---
+
+### Task 10: Scheduler — snapshot_retention job (diário, 30d)
+
+**Spec ref:** §2.4 (cron 03:00 BRT, `find -mtime +30`, integrado em `getJobHealth()`).
+
+**Files:**
+- Modify: `packages/edge/src/erp-sync/scheduler.ts` (adicionar 4º job)
+- Test: `packages/edge/tests/unit/scheduler/snapshot-retention.test.ts` (testa lógica, não cron-fire)
+
+- [ ] **Step 1: Failing test — verifica que startScheduler registra job de retention**
+
+`packages/edge/tests/unit/scheduler/snapshot-retention.test.ts`:
+```typescript
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+
+// Mock node-cron ANTES de importar scheduler — captura a definição do job
+// sem ativar timers reais.
+const captured: Array<{ cronExpr: string; cb: () => Promise<void> | void; name?: string }> = [];
+
+mock.module("node-cron", () => ({
+  default: {
+    schedule: (cronExpr: string, cb: () => Promise<void> | void) => {
+      captured.push({ cronExpr, cb });
+      return { stop: () => {} };
+    },
+  },
+}));
+
+// Mock dependências externas pra evitar I/O real
+mock.module("../../../src/erp-sync/checkins.js", () => ({ pollCheckins: async () => {} }));
+mock.module("../../../src/erp-sync/clients.js", () => ({ syncClients: async () => {} }));
+mock.module("../../../src/erp-sync/employees.js", () => ({ syncEmployees: async () => {} }));
+mock.module("../../../src/match-temp/orchestrator.js", () => ({
+  processAllPendingCheckins: async () => {},
+}));
+let prunedDays: number | undefined;
+let prunedBaseDir: string | undefined;
+mock.module("../../../src/api/reid/snapshot-store.js", () => ({
+  pruneOlderThan: async ({ baseDir, days }: { baseDir: string; days: number }) => {
+    prunedBaseDir = baseDir;
+    prunedDays = days;
+    return 3; // pretende ter apagado 3 dirs
+  },
+}));
+
+import { startScheduler } from "../../../src/erp-sync/scheduler.js";
+import { _resetHealth, getJobHealth } from "../../../src/erp-sync/scheduler-health.js";
+
+beforeEach(() => {
+  captured.length = 0;
+  prunedDays = undefined;
+  prunedBaseDir = undefined;
+  _resetHealth();
+});
+afterEach(() => {
+  // não há cleanup do mock — bun:test garante reset entre arquivos
+});
+
+describe("snapshot_retention job (Onda 7)", () => {
+  test("startScheduler registers snapshot_retention with daily 03:00 cron expr", () => {
+    const h = startScheduler();
+    h.stop();
+    const j = captured.find((c) => c.cronExpr === "0 3 * * *");
+    expect(j).toBeDefined();
+  });
+
+  test("snapshot_retention job calls pruneOlderThan(30d) and marks success", async () => {
+    process.env.SNAPSHOTS_DIR = "/tmp/test-snaps";
+    const h = startScheduler();
+    const j = captured.find((c) => c.cronExpr === "0 3 * * *");
+    expect(j).toBeDefined();
+    await j!.cb();
+    h.stop();
+    expect(prunedDays).toBe(30);
+    expect(prunedBaseDir).toBe("/tmp/test-snaps");
+    const health = getJobHealth();
+    const snap = health.find((x) => x.name === "snapshot_retention");
+    expect(snap?.healthy).toBe(true);
+    expect(snap?.last_success_at).toBeInstanceOf(Date);
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — job snapshot_retention não registrado)**
+
+`bun --filter '@vipcam/edge' test tests/unit/scheduler/snapshot-retention.test.ts`
+
+- [ ] **Step 3: Adicionar job ao scheduler**
+
+Em `packages/edge/src/erp-sync/scheduler.ts`:
+
+(a) Adicionar import no topo:
+```typescript
+import { pruneOlderThan } from "../api/reid/snapshot-store.js";
+import { getEnv } from "../config/env.js";
+```
+
+(b) Dentro de `startScheduler`, antes do `return { stop: ... }`, adicionar:
+```typescript
+  const snapJob = cron.schedule(
+    "0 3 * * *",
+    withRunningGuard("snapshot_retention", async () => {
+      const env = getEnv();
+      const deleted = await pruneOlderThan({ baseDir: env.SNAPSHOTS_DIR, days: 30 });
+      logger.info({ deleted }, "snapshot retention job — pruned old date dirs");
+    }),
+  );
+```
+
+(c) E adicionar ao `stop()`:
+```typescript
+    stop() {
+      empJob.stop();
+      cliJob.stop();
+      chkJob.stop();
+      snapJob.stop();
+      logger.info("ERP sync scheduler stopped");
+    },
+```
+
+(d) Atualizar log inicial pra refletir o job novo:
+```typescript
+  logger.info(
+    "scheduler started (employees=hourly, clients=15min, checkins=30s, snapshot_retention=daily-03:00)",
+  );
+```
+
+- [ ] **Step 4: Run test (pass)**
+
+`bun --filter '@vipcam/edge' test tests/unit/scheduler/snapshot-retention.test.ts` → 2 PASS.
+
+- [ ] **Step 5: Run all edge tests (sanity — scheduler é compartilhado)**
+
+`bun --filter '@vipcam/edge' test`
+Expected: tudo verde. Como mock.module é process-wide em bun:test, se outros testes do scheduler existirem, podem ser afetados — mas Onda 8 já documentou o pattern de re-register em beforeEach.
+
+- [ ] **Step 6: Verificar que /api/health vai expor checks.scheduler_snapshot_retention**
+
+Não há código novo a escrever — `getJobHealth()` é genérico, então qualquer job registrado via `withRunningGuard` vira automaticamente `checks.scheduler_<name>` no `/api/health`. Verificação visual (manual, no curl):
+```bash
+# Depois do deploy:
+curl -H "X-API-Key: $KEY" https://monitoramento.../api/health | jq .checks
+# Esperado: aparece "scheduler_snapshot_retention": {"ok": true}
+```
+(Esta verificação roda no plano operacional pós-merge, não no plano de TDD.)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/edge/src/erp-sync/scheduler.ts \
+        packages/edge/tests/unit/scheduler/snapshot-retention.test.ts
+git commit -m "feat(edge): Onda 7 — scheduler snapshot_retention diário 03:00 (30d retention via pruneOlderThan)"
+```
+
+---
+
