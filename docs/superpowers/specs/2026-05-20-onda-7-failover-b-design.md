@@ -266,22 +266,16 @@ Quando humano resolve ambiguous "X é Y" no `/matches`:
 ```sql
 BEGIN;
 
--- 1. Lock atômico das DUAS rows de persons na ordem do id (anti-deadlock —
---    sempre LEAST primeiro). Captura snapshot de X num CTE-equivalente para
---    evitar leituras inconsistentes entre os UPDATEs posteriores.
-WITH locked AS (
-  SELECT id, total_visits, first_seen_at, last_seen_at,
-         row_to_json(persons.*) AS snapshot
-    FROM persons
-   WHERE id IN ($X, $Y)
-   ORDER BY id  -- ordem determinística pra prevenir deadlock entre operadores
-     FOR UPDATE
-),
-x_snap AS (SELECT * FROM locked WHERE id = $X),
-y_snap AS (SELECT * FROM locked WHERE id = $Y)
-SELECT 1;  -- materializa locks (CTEs em WITH não-executam sem SELECT)
+-- 1. Lock determinístico das DUAS rows de persons em ordem de id ascendente
+--    (LEAST primeiro, depois GREATEST) — dois statements SEPARADOS porque
+--    Postgres só garante ordem de lock por statement, não dentro de uma cláusula
+--    ORDER BY com IN(...). Helper TS resolve LEAST/GREATEST antes de chamar.
+SELECT id FROM persons WHERE id = $LEAST  FOR UPDATE;
+SELECT id FROM persons WHERE id = $GREATEST FOR UPDATE;
 
--- 2. Migra todas as refs de X pra Y.
+-- 2. Migra todas as refs de X pra Y. Subqueries em (4) e (5) abaixo são seguras
+--    porque $X permanece locked desde (1) até COMMIT — leituras retornam o
+--    estado consistente capturado no início da txn.
 UPDATE detections   SET person_id = $Y WHERE person_id = $X;
 UPDATE sessions     SET person_id = $Y WHERE person_id = $X;
 UPDATE face_records SET person_id = $Y WHERE person_id = $X;
@@ -323,10 +317,18 @@ COMMIT;
 
 **Helper TS:** `personsRepo.mergeInto(srcId, dstId, userId)` em transação Drizzle única (`db.transaction(async tx => ...)`). Compartilhado entre `resolveAmbiguous` (existente, match temporal) e `resolveReidAmbiguous` (novo).
 
+**Computação dos parâmetros do lock no TS** (antes de abrir a transação):
+```typescript
+const [leastId, greatestId] =
+  srcId < dstId ? [srcId, dstId] : [dstId, srcId];
+// Passa leastId e greatestId pros dois SELECT ... FOR UPDATE.
+```
+
 **Regras invariantes documentadas no helper (comentário de cabeçalho):**
-- Lock sempre na ordem `LEAST(srcId, dstId), GREATEST(srcId, dstId)` pra prevenir deadlock entre dois operadores resolvendo merges sobrepostos.
+- Lock sempre na ordem ascendente (`LEAST` primeiro, `GREATEST` depois) via dois `SELECT ... FOR UPDATE` separados — Postgres só garante ordem de lock por statement, não dentro de uma cláusula `ORDER BY` com `IN(...)`. Isto previne deadlock entre dois operadores resolvendo merges sobrepostos com src/dst trocados.
 - Toda coluna nova adicionada ao rollup precisa ser NOT NULL no schema OU usar `COALESCE(...)` pra evitar `LEAST(NULL, x) = NULL` silencioso.
 - `last_seen_at` usa `GREATEST` (recência); `first_seen_at` usa `LEAST` (antiguidade); `total_visits` soma.
+- Subqueries `(SELECT ... FROM persons WHERE id=$X)` nas etapas posteriores são seguras pós-lock — `$X` permanece locked até `COMMIT`, então leituras retornam estado consistente sem precisar de CTE de snapshot.
 
 **Irreversível (sem undo).** `person_merge_audit` permite reconstruir o que X tinha pra fins de auditoria (DBA pode rehidratar persons.X via `INSERT FROM src_snapshot`), mas refs já viraram Y — re-vincular detections/sessions/face_records pediria revert manual.
 
