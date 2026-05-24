@@ -81,11 +81,14 @@ Adicionado ao `packages/reid/src/main.py`. Não toca `/detect` da Onda 6 (probe 
   "det_score": 0.92,                    // confiança da detecção pós-crop
   "infer_ms": 28,
   "model_name": "buffalo_s",
-  "model_revision": "insightface-0.7.3"
+  "model_revision": "insightface-0.7.3",
+  "crop_jpeg_b64": "/9j/4AAQSkZJRg..."  // crop reencoded JPEG, base64-encoded
 }
 ```
 
-Sidecar valida bbox dentro do frame (fallback: erro 400 se inválido). PIL faz `Image.open(BytesIO).crop((x, y, x+w, y+h))` antes do `model.get(...)`. Crop fica em memória — sidecar não escreve em disco. Edge usa o crop devolvido para o write em disco (Seção 2).
+Sidecar valida bbox dentro do frame (fallback: erro 400 se inválido). PIL faz `Image.open(BytesIO).crop((x, y, x+w, y+h))` antes do `model.get(...)`. Crop fica em memória — sidecar **re-serializa o crop como JPEG (quality=85)** e devolve em `crop_jpeg_b64`. Edge decodifica base64 e escreve direto em disco (Seção 2.1).
+
+> **Por que base64 e não bytes raw multipart?** FastAPI/Pydantic não emite respostas multipart nativamente. base64 inflaciona ~33% (crop ~150KB → ~200KB sobre loopback), aceitável. Alternativa (streaming via `Response`) sacrificaria o tipo Pydantic; ganho marginal pra dor de manutenção.
 
 > **Decisão de design:** crop no sidecar (não no edge) para evitar dependência de bib de imagem JS no Bun (sharp/jimp/ffmpeg). Payload `localhost` 600 KB via loopback é ~5 ms — desprezível.
 
