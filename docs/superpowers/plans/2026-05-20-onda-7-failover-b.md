@@ -518,6 +518,7 @@ def test_warmup_returns_200_with_took_ms():
     reason="face.jpg fixture not provisioned (VPS step)",
 )
 def test_embed_returns_512d_vector_for_face_crop():
+    import base64
     with open(FACE, "rb") as f:
         raw = f.read()
     img = Image.open(io.BytesIO(raw))
@@ -537,6 +538,11 @@ def test_embed_returns_512d_vector_for_face_crop():
     assert body["model_revision"].startswith("insightface-")
     assert 0 <= body["det_score"] <= 1
     assert body["infer_ms"] >= 0
+    # Onda 7 §3.1 amend: crop_jpeg_b64 deve decodificar de volta pra JPEG válido
+    crop_bytes = base64.b64decode(body["crop_jpeg_b64"])
+    crop_img = Image.open(io.BytesIO(crop_bytes))
+    assert crop_img.format == "JPEG"
+    assert crop_img.size == (bw, bh)
 ```
 
 - [ ] **Step 2: Run tests (fail)**
@@ -612,7 +618,7 @@ async def warmup() -> WarmupResponse:
 
 - [ ] **Step 3e: Adicionar /embed endpoint**
 
-Após o handler `warmup`, adicionar:
+Após o handler `warmup`, adicionar (imports adicionais: `import base64`):
 ```python
 class EmbedResponse(BaseModel):
     embedding: list[float]  # 512 floats (normed)
@@ -620,6 +626,10 @@ class EmbedResponse(BaseModel):
     infer_ms: int
     model_name: str
     model_revision: str
+    # Onda 7 §3.1: crop reencoded JPEG (q=85), base64-encoded. Edge decode +
+    # write em disco. Inflação ~33% sobre loopback aceitável vs alternativa
+    # multipart (sacrificaria typed Pydantic).
+    crop_jpeg_b64: str
 
 
 @app.post("/embed", response_model=EmbedResponse)
@@ -633,9 +643,9 @@ async def embed(
     """Crop pela bbox + extrai embedding 512-d (InsightFace recognition).
 
     Edge envia frame inteiro + bbox do evento Dahua. Sidecar valida bbox,
-    cropa em PIL e roda model.get() sobre o crop (detection+recognition em
+    cropa em PIL, roda model.get() sobre o crop (detection+recognition em
     cima do rosto já isolado — mais rápido e preciso que rodar no frame
-    inteiro 2688x1520).
+    inteiro 2688x1520), e devolve o crop serializado pra edge persistir.
     """
     if x < 0 or y < 0 or w <= 0 or h <= 0:
         raise HTTPException(status_code=400, detail="bbox: x/y must be >= 0, w/h must be > 0")
@@ -661,12 +671,17 @@ async def embed(
             detail="no face detected in crop — bbox may be misaligned or face too small",
         )
     best = max(faces, key=lambda f: f.det_score)
+    # Serializa crop pra edge persistir (Onda 7 §3.1 amend)
+    crop_buf = io.BytesIO()
+    crop.save(crop_buf, format="JPEG", quality=85)
+    crop_b64 = base64.b64encode(crop_buf.getvalue()).decode("ascii")
     return EmbedResponse(
         embedding=[float(v) for v in best.normed_embedding.tolist()],
         det_score=float(best.det_score),
         infer_ms=infer_ms,
         model_name=MODEL_NAME,
         model_revision=MODEL_REVISION,
+        crop_jpeg_b64=crop_b64,
     )
 ```
 
@@ -761,6 +776,9 @@ export interface EmbedResult {
   infer_ms: number;
   model_name: string;
   model_revision: string;
+  /** Crop reencoded JPEG q=85, base64-encoded. Edge decodifica e escreve em
+   * disco via saveCrop (Onda 7 §2.1 — crop, não frame inteiro). */
+  crop_jpeg_b64: string;
 }
 
 /**
@@ -815,6 +833,7 @@ describe("reid-client.embed", () => {
       infer_ms: 28,
       model_name: "buffalo_s",
       model_revision: "insightface-0.7.3",
+      crop_jpeg_b64: "/9j/4AAQSkZJRg==", // 1-byte JPEG b64 placeholder
     };
     let receivedUrl = "";
     let receivedBody: FormData | null = null;
@@ -873,6 +892,7 @@ describe("reid-client.embed", () => {
           infer_ms: 0,
           model_name: "x",
           model_revision: "y",
+          crop_jpeg_b64: "",
         }),
         { status: 200 },
       );
@@ -2534,6 +2554,7 @@ describe("processEvent — reid integration", () => {
         infer_ms: 28,
         model_name: "buffalo_s",
         model_revision: "insightface-0.7.3",
+        crop_jpeg_b64: "/9j/4AAQSkZJRgABAQEAYABgAAD/2w==", // small valid JPEG b64
       },
     };
     const raw = {
@@ -2571,6 +2592,7 @@ describe("processEvent — reid integration", () => {
         infer_ms: 28,
         model_name: "buffalo_s",
         model_revision: "insightface-0.7.3",
+        crop_jpeg_b64: "/9j/4AAQSkZJRgABAQEAYABgAAD/2w==", // small valid JPEG b64
       },
     };
     const raw = {
@@ -2662,17 +2684,39 @@ describe("processEvent — reid integration", () => {
 
 Substituir o `processEvent` atual por uma versão que:
 1. Recebe `deps?: { captureSnapshot?: () => Promise<Buffer> }` opcional
-2. Após resolveSessionId, captura frame se evento tem bbox + REID_ENABLED + captureSnapshot fornecido
-3. Chama orchestrator
-4. Salva crop em disco (sempre que tem snapshot bytes — independente do reid status)
+2. Resolve session UMA vez retornando `{sessionId, inheritedPersonId}` (single query)
+3. Captura frame se evento tem bbox + REID_ENABLED + captureSnapshot fornecido
+4. Chama orchestrator; **escreve o crop DEVOLVIDO pelo orchestrator (`reidOut.embedding.crop_jpeg_b64` decoded), não o frame inteiro** — preserva §2.1
 5. Cria person nova se status=new_person
 6. Insere detection com snapshot_path + person_id + face_attrs.reid_status/reid_distance/reid_error
-7. Insere face_record se status in {strict, new_person}
+7. Insere face_record se status in {strict, new_person} **E snapshotPath não-null** (não escrevemos embedding órfão sem imagem visualizável)
 8. Insere reid_match_attempt(ambiguous) se status=borderline
 9. Mantém recalcDominantEmotion + eventBus.publish
 
-Código completo (substituir o `export async function processEvent` inteiro):
+**Imports static** no topo do arquivo (sem `await import`):
 ```typescript
+import type { CanonicalEvent, LiveDetectionEvent } from "@vipcam/shared";
+import { eventBus } from "../api/events/event-bus.js";
+import { resolvePersonIdViaReid, type ReidOutput } from "../api/reid/orchestrator.js";
+import { saveCrop } from "../api/reid/snapshot-store.js";
+import { getEnv } from "../config/env.js";
+import type { CapturedEvent } from "../discovery/capture.js";
+import { logger } from "../obs/logger.js";
+import {
+  detectionsRepo,
+  faceRecordsRepo,
+  personsRepo,
+  reidMatchAttemptsRepo,
+  sessionsRepo,
+} from "../persistence/repositories/index.js";
+import { normalize } from "./normalizer.js";
+import { shouldStartNewSession } from "./session-tracker.js";
+```
+
+Código completo do `processEvent` + helper:
+```typescript
+const SESSION_GAP_MS = 30_000;
+
 export interface ProcessEventDeps {
   /** Closure que captura frame inteiro via snapshot.cgi. Injetada pelo
    * listener (que tem o DahuaHttpClient). Quando undefined (ex: testes
@@ -2694,20 +2738,16 @@ export async function processEvent(
     }
 
     const detectedAt = new Date(event.detected_at);
-    // Resolve session ANTES do reid pra ter sessionInheritedPersonId
-    const sessionId = await resolveSessionIdWithAnchor(event, detectedAt);
-    const sessionInheritedPersonId = await sessionsRepo
-      .findOpenForTrack(event.camera_id, event.track_id ?? "", detectedAt, SESSION_GAP_MS)
-      .then((s) => s?.person_id ?? null);
+    // SINGLE call — retorna sessionId E inheritedPersonId (sessão prévia ABERTA)
+    const { sessionId, inheritedPersonId } = await resolveSessionIdWithAnchor(event, detectedAt);
 
     // Snapshot capture + reid orchestration (apenas se temos bbox + captureSnapshot)
     let snapshotPath: string | null = null;
-    let reidOut: import("../api/reid/orchestrator.js").ReidOutput | null = null;
+    let reidOut: ReidOutput | null = null;
     const detectionId = crypto.randomUUID();
     if (event.bbox && deps.captureSnapshot) {
       try {
         const frameBytes = await deps.captureSnapshot();
-        const { resolvePersonIdViaReid } = await import("../api/reid/orchestrator.js");
         reidOut = await resolvePersonIdViaReid({
           cameraId: event.camera_id,
           detectionId,
@@ -2715,20 +2755,21 @@ export async function processEvent(
           sessionId,
           bbox: event.bbox,
           frameBytes,
-          sessionInheritedPersonId,
+          sessionInheritedPersonId: inheritedPersonId,
         });
-        // Save snapshot (sempre — mesmo se reid falhou, queremos o /live mostrando rosto)
-        const { saveCrop } = await import("../api/reid/snapshot-store.js");
-        const { getEnv } = await import("../config/env.js");
-        // NB: gravamos o FRAME INTEIRO (não o crop) porque crop pra serializar
-        // pediria PIL/sharp no edge — Onda 7 mantém JPEG do frame inteiro até
-        // que UI tenha demand pra apertar (Onda futura).
-        snapshotPath = await saveCrop({
-          baseDir: getEnv().SNAPSHOTS_DIR,
-          detectionId,
-          detectedAt,
-          jpegBytes: frameBytes,
-        });
+        // Onda 7 §2.1: escrevemos o CROP devolvido pelo sidecar (não o frame
+        // inteiro). embed() retorna crop_jpeg_b64 — decodificamos pra Buffer e
+        // gravamos. Se reid falhou (sem embedding), pulamos o write — UI mostra
+        // placeholder, sem garbage.
+        if (reidOut.embedding?.crop_jpeg_b64) {
+          const cropBytes = Buffer.from(reidOut.embedding.crop_jpeg_b64, "base64");
+          snapshotPath = await saveCrop({
+            baseDir: getEnv().SNAPSHOTS_DIR,
+            detectionId,
+            detectedAt,
+            jpegBytes: cropBytes,
+          });
+        }
       } catch (err) {
         logger.warn({ err, detectionId }, "snapshot/reid pipeline error — degrading");
       }
@@ -2778,29 +2819,27 @@ export async function processEvent(
 
     const created = await detectionsRepo.create(detection);
 
-    // face_record (strict ou new_person tem embedding pra gravar)
+    // face_record (strict ou new_person com embedding E snapshot persistido —
+    // sem snapshot não escrevemos: embedding sem imagem visualizável é débito).
     if (
       reidOut?.embedding &&
       (reidOut.status === "matched_strict" || reidOut.status === "new_person") &&
-      personId
+      personId &&
+      snapshotPath
     ) {
-      const { faceRecordsRepo } = await import("../persistence/repositories/face-records.repo.js");
       await faceRecordsRepo.insertAndEvict({
         person_id: personId,
         embedding: reidOut.embedding.embedding,
-        snapshot_path: snapshotPath ?? "",
+        snapshot_path: snapshotPath,
         det_score: reidOut.embedding.det_score,
         model_name: reidOut.embedding.model_name,
         model_revision: reidOut.embedding.model_revision,
-        is_primary: reidOut.status === "new_person", // primeiro embedding da person nova vira primary
+        is_primary: reidOut.status === "new_person",
       });
     }
 
     // reid_match_attempt(ambiguous) se borderline
     if (reidOut?.status === "borderline" && reidOut.borderlineCandidate) {
-      const { reidMatchAttemptsRepo } = await import(
-        "../persistence/repositories/reid-match-attempts.repo.js"
-      );
       await reidMatchAttemptsRepo.createAmbiguous({
         detection_id: created.id,
         candidate_face_record_id: reidOut.borderlineCandidate.face_record_id,
@@ -2838,26 +2877,37 @@ export async function processEvent(
   }
 }
 
-// Helper privado — encapsula a lógica de resolveSessionId atual sem o personId
-// (que agora é decidido pós-reid). Preserva semântica do shouldStartNewSession.
-async function resolveSessionIdWithAnchor(event: CanonicalEvent, detectedAt: Date): Promise<string> {
+/**
+ * Helper privado — UMA query a findOpenForTrack devolvendo TANTO o sessionId
+ * que vamos usar quanto o personId herdável (de detection prévia da MESMA
+ * sessão aberta) pro session-inheritance fallback do reid (Onda 7 §3.5).
+ *
+ * Limitação documentada: se a sessão é nova (não existe sessão aberta pro
+ * track), inheritedPersonId = null — não há previous-detection pra herdar.
+ * Pipeline-level workaround pra reid down nessa primeira detection seria uma
+ * Onda futura (sweep job).
+ */
+async function resolveSessionIdWithAnchor(
+  event: CanonicalEvent,
+  detectedAt: Date,
+): Promise<{ sessionId: string; inheritedPersonId: string | null }> {
   const existing = event.track_id
     ? await sessionsRepo.findOpenForTrack(event.camera_id, event.track_id, detectedAt, SESSION_GAP_MS)
     : null;
   if (existing && !shouldStartNewSession(existing.last_seen_at, detectedAt, SESSION_GAP_MS)) {
     await sessionsRepo.appendDetection(existing.id, detectedAt);
-    return existing.id;
+    return { sessionId: existing.id, inheritedPersonId: existing.person_id ?? null };
   }
   const newSession: Parameters<typeof sessionsRepo.create>[0] = {
     camera_id: event.camera_id,
-    person_id: null, // pessoa será setada pós-reid via UPDATE futuro (ou ficam null pra anônimas)
+    person_id: null,
     started_at: detectedAt,
     last_seen_at: detectedAt,
     detection_count: 1,
   };
   if (event.track_id !== undefined) newSession.current_track_id = event.track_id;
   const created = await sessionsRepo.create(newSession);
-  return created.id;
+  return { sessionId: created.id, inheritedPersonId: null };
 }
 ```
 
