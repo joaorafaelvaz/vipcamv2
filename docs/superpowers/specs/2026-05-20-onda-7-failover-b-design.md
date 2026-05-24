@@ -103,17 +103,21 @@ export async function embed(
 
 `EmbedResult` em `packages/shared`: `{ embedding: number[]; det_score: number; infer_ms: number; model_name: string; model_revision: string }`.
 
-### 3.3 Cold start: pre-warm via `ExecStartPost`
-Systemd unit `infra/systemd/vipcam-reid.service` ganha:
+### 3.3 Cold start: pre-warm via `/warmup` endpoint + `ExecStartPost`
+**Novo endpoint sidecar:** `POST /warmup` — dispara `_model().prepare(...)` (idempotente — se já está carregado, no-op) e retorna `200 {"warmed": true, "took_ms": N}`. Não recebe payload. Independente de `/embed` (que precisa de uma imagem com rosto detectável pra responder 200) — pode ser invocado sem assets de imagem.
+
+Sistemd unit `infra/systemd/vipcam-reid.service` ganha:
 ```
-ExecStartPost=/bin/sh -c '\
-  curl --fail --silent --retry 30 --retry-delay 1 \
-    -F file=@/opt/vipcamv2/packages/reid/assets/warmup.jpg \
-    -F x=0 -F y=0 -F w=64 -F h=64 \
-    http://127.0.0.1:5005/embed > /dev/null'
+ExecStartPost=/usr/bin/curl --fail --silent --output /dev/null \
+    --retry 30 --retry-delay 1 --retry-connrefused \
+    -X POST http://127.0.0.1:5005/warmup
 ```
 
-Imagem dummy 64×64 vendorizada em `packages/reid/assets/warmup.jpg`. Sidecar fica warm antes do `systemctl start` retornar — cold start (~5,5s) nunca afeta pipeline runtime. Cliente edge usa timeout **3s** normal.
+`--fail` ativo: se `/warmup` retornar 500 (modelo falhou em carregar, ex.: paths errados), `ExecStartPost` falha → systemd marca o unit como failed → systemd `Restart=always` + monitoring alerta. Cold start (~5,5s) acontece DENTRO do `ExecStartPost` antes do unit ser marcado ativo — pipeline runtime sempre vê sidecar warm.
+
+> **Decisão vs draft anterior:** o draft usava `curl ... /embed` com imagem dummy 64×64, mas `/embed` legitimamente responde 422 pra imagem sem rosto, forçando systemd a marcar unit como falho. Endpoint dedicado `/warmup` evita o impasse e elimina a necessidade de vendorizar assets de imagem.
+
+Cliente edge usa timeout **3s** normal em runtime.
 
 ### 3.4 Health: `checks.reid`
 `GET /api/health` ganha ping sync ao `/health` do sidecar (timeout 1s). Retorno:
