@@ -3126,3 +3126,1000 @@ git commit -m "feat(edge): Onda 7 — /api/health ganha checks.reid (sync ping, 
 
 ---
 
+## Chunk 4: Person merge + reid_match_attempts repo + endpoints
+
+Fecha o loop humano-no-loop: `personsRepo.mergeInto` transacional (§5.2), `reidMatchAttemptsRepo` ganha `findPendingEnriched` + `resolve`, e endpoints `GET /api/matches/reid/pending` + `POST /api/matches/reid/:id/resolve` (§5.3).
+
+**Tasks neste chunk:** 16-19
+**Sequenciamento:** 16 → 17 (resolve depende de mergeInto) → 18 → 19. Tudo edge-side; UI vem em Chunk 5.
+
+---
+
+### Task 16: personsRepo.mergeInto (hard merge transacional)
+
+**Spec ref:** §5.2 (locking determinístico LEAST/GREATEST + transferToPerson + rollup com GREATEST/LEAST + audit + DELETE).
+
+**Files:**
+- Modify: `packages/edge/src/persistence/repositories/persons.repo.ts`
+- Test: `packages/edge/tests/integration/persistence/persons-merge.test.ts` (DB-deferred)
+
+- [ ] **Step 1: Failing test (DB-deferred — exercita transação completa)**
+
+`packages/edge/tests/integration/persistence/persons-merge.test.ts`:
+```typescript
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { sql } from "drizzle-orm";
+import { faceRecordsRepo } from "../../../src/persistence/repositories/face-records.repo.js";
+import { personsRepo } from "../../../src/persistence/repositories/persons.repo.js";
+import { getDb } from "../../../src/persistence/db.js";
+
+let srcId: string;
+let dstId: string;
+
+function vec(seed: number): number[] {
+  return Array.from({ length: 512 }, (_, i) => (seed * (i + 1)) / 1e6);
+}
+
+beforeEach(async () => {
+  const src = await personsRepo.create({
+    display_name: "Source anônima",
+    person_type: "anonymous",
+    first_seen_at: new Date("2026-05-15T10:00:00Z"),
+    last_seen_at: new Date("2026-05-20T14:00:00Z"),
+    total_visits: 3,
+  });
+  srcId = src.id;
+  const dst = await personsRepo.create({
+    display_name: "Destination cliente",
+    person_type: "client",
+    first_seen_at: new Date("2026-05-18T08:00:00Z"),
+    last_seen_at: new Date("2026-05-19T12:00:00Z"),
+    total_visits: 5,
+    erp_client_id: "cliente-erp-123",
+  });
+  dstId = dst.id;
+});
+
+afterEach(async () => {
+  const db = getDb();
+  await db.execute(sql`DELETE FROM person_merge_audit WHERE src_id IN (${srcId}, ${dstId}) OR dst_id IN (${srcId}, ${dstId})`);
+  await db.execute(sql`DELETE FROM face_records WHERE person_id IN (${srcId}, ${dstId})`);
+  await db.execute(sql`DELETE FROM persons WHERE id IN (${srcId}, ${dstId})`);
+});
+
+describe("personsRepo.mergeInto (Onda 7 §5.2)", () => {
+  test("hard merge: src some, face_records migram, rollup correto, audit inserido", async () => {
+    // src tem 2 face_records, dst tem 4 → após merge dst tem 5 (eviction)
+    for (let i = 0; i < 2; i++) {
+      await faceRecordsRepo.insertAndEvict({
+        person_id: srcId,
+        embedding: vec(100 + i),
+        snapshot_path: `2026-05-15/src-${i}.jpg`,
+        det_score: 0.9,
+        model_name: "buffalo_s",
+        model_revision: "insightface-0.7.3",
+      });
+    }
+    for (let i = 0; i < 4; i++) {
+      await faceRecordsRepo.insertAndEvict({
+        person_id: dstId,
+        embedding: vec(200 + i),
+        snapshot_path: `2026-05-18/dst-${i}.jpg`,
+        det_score: 0.9,
+        model_name: "buffalo_s",
+        model_revision: "insightface-0.7.3",
+      });
+    }
+
+    await personsRepo.mergeInto(srcId, dstId, "user-test");
+
+    // src foi deletada
+    const srcAfter = await personsRepo.findById(srcId);
+    expect(srcAfter).toBeNull();
+
+    // dst absorveu rollup
+    const dstAfter = await personsRepo.findById(dstId);
+    expect(dstAfter).not.toBeNull();
+    expect(dstAfter!.total_visits).toBe(8); // 5 + 3
+    expect(dstAfter!.first_seen_at.toISOString()).toBe("2026-05-15T10:00:00.000Z"); // LEAST
+    expect(dstAfter!.last_seen_at.toISOString()).toBe("2026-05-20T14:00:00.000Z"); // GREATEST
+
+    // face_records: dst tem no máximo 5 (eviction)
+    const db = getDb();
+    const [{ c: dstFrCount }] = await db.execute<{ c: number }>(
+      sql`SELECT count(*)::int AS c FROM face_records WHERE person_id = ${dstId}`,
+    );
+    expect(dstFrCount).toBe(5);
+
+    // Audit row criada
+    const audit = await db.execute<{ id: string; src_id: string; dst_id: string; merged_by: string }>(
+      sql`SELECT id, src_id, dst_id, merged_by FROM person_merge_audit WHERE src_id = ${srcId} AND dst_id = ${dstId}`,
+    );
+    expect(audit.length).toBe(1);
+    expect(audit[0].merged_by).toBe("user-test");
+  });
+
+  test("merge é idempotente (chamar 2x: a segunda chamada throws 'src já não existe')", async () => {
+    await personsRepo.mergeInto(srcId, dstId, "user-1");
+    await expect(personsRepo.mergeInto(srcId, dstId, "user-2")).rejects.toThrow(/not found/i);
+  });
+
+  test("merge de srcId == dstId é rejeitado (proteção contra self-merge)", async () => {
+    await expect(personsRepo.mergeInto(srcId, srcId, "user")).rejects.toThrow(/same/i);
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — mergeInto não existe)**
+
+`bash packages/edge/scripts/run-integration-tests.sh tests/integration/persistence/persons-merge.test.ts`
+
+- [ ] **Step 3: Implement mergeInto + transferToPerson reuse**
+
+Em `packages/edge/src/persistence/repositories/persons.repo.ts`, append ao `personsRepo` object:
+```typescript
+  /**
+   * Hard merge transacional (Onda 7 §5.2): src some, todas as refs migram pra
+   * dst, persons.dst absorve rollup de visitas, audit row inserida.
+   *
+   * Lock determinístico em ordem ascendente (LEAST primeiro) pra prevenir
+   * deadlock entre dois operadores resolvendo merges sobrepostos.
+   *
+   * Subqueries posteriores ao FOR UPDATE são seguras porque srcId permanece
+   * locked até COMMIT.
+   */
+  async mergeInto(srcId: string, dstId: string, userId: string): Promise<void> {
+    if (srcId === dstId) {
+      throw new Error("mergeInto: srcId and dstId are the same person");
+    }
+    const [leastId, greatestId] = srcId < dstId ? [srcId, dstId] : [dstId, srcId];
+    await getDb().transaction(async (tx) => {
+      // 1. Lock determinístico (dois statements separados — single ORDER BY IN(...) FOR UPDATE
+      // não-garante ordem de lock acquisition no Postgres).
+      const lockedLeast = await tx.execute<{ id: string }>(
+        sql`SELECT id FROM persons WHERE id = ${leastId} FOR UPDATE`,
+      );
+      const lockedGreatest = await tx.execute<{ id: string }>(
+        sql`SELECT id FROM persons WHERE id = ${greatestId} FOR UPDATE`,
+      );
+      if (lockedLeast.length === 0 || lockedGreatest.length === 0) {
+        throw new Error(`mergeInto: person not found (${srcId} or ${dstId})`);
+      }
+
+      // 2. Migra refs (detections, sessions, face_records via helper)
+      await tx.execute(sql`UPDATE detections SET person_id = ${dstId} WHERE person_id = ${srcId}`);
+      await tx.execute(sql`UPDATE sessions   SET person_id = ${dstId} WHERE person_id = ${srcId}`);
+      await tx.execute(sql`UPDATE face_records SET person_id = ${dstId} WHERE person_id = ${srcId}`);
+
+      // 3. Eviction FIFO em dst após import (Top-K=5)
+      await tx.execute(sql`
+        DELETE FROM face_records
+        WHERE id IN (
+          SELECT id FROM face_records
+          WHERE person_id = ${dstId}
+          ORDER BY created_at DESC
+          OFFSET 5
+        )
+      `);
+
+      // 4. Rollup das estatísticas — regras invariantes Onda 7 §5.2:
+      //    - last_seen_at  = GREATEST(recência)
+      //    - first_seen_at = LEAST (antiguidade)
+      //    - total_visits  = soma
+      //    - colunas nullable PRECISAM usar COALESCE (none aqui — todas NOT NULL).
+      await tx.execute(sql`
+        UPDATE persons
+        SET total_visits  = persons.total_visits + (SELECT total_visits FROM persons WHERE id = ${srcId}),
+            first_seen_at = LEAST(persons.first_seen_at,    (SELECT first_seen_at FROM persons WHERE id = ${srcId})),
+            last_seen_at  = GREATEST(persons.last_seen_at,  (SELECT last_seen_at FROM persons WHERE id = ${srcId})),
+            updated_at    = now()
+        WHERE id = ${dstId}
+      `);
+
+      // 5. Audit ANTES do delete (snapshot completo de src)
+      await tx.execute(sql`
+        INSERT INTO person_merge_audit (src_id, dst_id, merged_at, merged_by, src_snapshot)
+        VALUES (
+          ${srcId}, ${dstId}, now(), ${userId},
+          (SELECT row_to_json(persons.*) FROM persons WHERE id = ${srcId})
+        )
+      `);
+
+      // 6. DELETE src. CASCADE em reid_match_attempts.candidate_person_id remove
+      //    quaisquer rows pendentes apontando pra src (intencional — referência
+      //    perdeu semântica).
+      await tx.execute(sql`DELETE FROM persons WHERE id = ${srcId}`);
+    });
+  },
+```
+
+Adicionar import de `sql` no topo (já tem — confirmar).
+
+- [ ] **Step 4: Run test (pass)**
+
+`bash packages/edge/scripts/run-integration-tests.sh tests/integration/persistence/persons-merge.test.ts` → 3 PASS.
+
+- [ ] **Step 5: Run /matches existing tests pra confirmar resolveAmbiguous não-regrediu**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/routes/matches.test.ts tests/unit/match-temp/`
+(Se houver — verificar pattern de existing tests.)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/edge/src/persistence/repositories/persons.repo.ts \
+        packages/edge/tests/integration/persistence/persons-merge.test.ts
+git commit -m "feat(edge): Onda 7 — personsRepo.mergeInto (transacional, lock determinístico, audit + cascade)"
+```
+
+---
+
+### Task 17: reidMatchAttemptsRepo — findPendingEnriched + resolve
+
+**Spec ref:** §5.3 (`GET /api/matches/reid/pending` enriquecido + `POST /resolve` com merge se "matched_to_candidate").
+
+**Files:**
+- Modify: `packages/edge/src/persistence/repositories/reid-match-attempts.repo.ts`
+- Create: `packages/shared/src/types/reid-pending.ts`
+- Modify: `packages/shared/src/index.ts`
+- Test: `packages/edge/tests/integration/persistence/reid-match-attempts-repo.test.ts` (DB-deferred)
+
+- [ ] **Step 1: Create shared types pra envelope enriquecido**
+
+`packages/shared/src/types/reid-pending.ts`:
+```typescript
+/** Item retornado por GET /api/matches/reid/pending — junta detection nova
+ * com candidate face_record + person, pra UI mostrar side-by-side. */
+export interface ReidMatchPendingEnriched {
+  id: string; // reid_match_attempt.id
+  distance: number;
+  decided_at: string; // ISO
+  detection: {
+    id: string;
+    detected_at: string;
+    snapshot_path: string | null;
+    camera_id: string;
+  };
+  candidate: {
+    face_record_id: string;
+    person_id: string;
+    snapshot_path: string; // face_records.snapshot_path (NOT NULL no schema)
+    person_display_name: string | null;
+    person_type: "client" | "employee" | "anonymous";
+  };
+}
+
+/** Decision de POST /api/matches/reid/:id/resolve */
+export type ReidResolveDecision = "matched_to_candidate" | "rejected_new_person";
+```
+
+E export em `packages/shared/src/index.ts`:
+```typescript
+export * from "./types/reid-pending.js";
+```
+
+- [ ] **Step 2: Failing test (DB-deferred)**
+
+`packages/edge/tests/integration/persistence/reid-match-attempts-repo.test.ts`:
+```typescript
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { sql } from "drizzle-orm";
+import { detectionsRepo } from "../../../src/persistence/repositories/detections.repo.js";
+import { faceRecordsRepo } from "../../../src/persistence/repositories/face-records.repo.js";
+import { personsRepo } from "../../../src/persistence/repositories/persons.repo.js";
+import { reidMatchAttemptsRepo } from "../../../src/persistence/repositories/reid-match-attempts.repo.js";
+import { sessionsRepo } from "../../../src/persistence/repositories/sessions.repo.js";
+import { getDb } from "../../../src/persistence/db.js";
+
+function vec(s: number): number[] {
+  return Array.from({ length: 512 }, (_, i) => (s * (i + 1)) / 1e6);
+}
+
+let cameraId: string;
+let candidatePersonId: string;
+let detectionId: string;
+let frId: string;
+let attemptId: string;
+
+beforeEach(async () => {
+  const db = getDb();
+  const [cam] = await db.execute<{ id: string }>(sql`
+    INSERT INTO cameras (id, name) VALUES (gen_random_uuid(), 'test-cam')
+    RETURNING id
+  `);
+  cameraId = cam.id;
+
+  const candP = await personsRepo.create({
+    display_name: "João Cliente",
+    person_type: "client",
+  });
+  candidatePersonId = candP.id;
+
+  const fr = await faceRecordsRepo.insertAndEvict({
+    person_id: candidatePersonId,
+    embedding: vec(1),
+    snapshot_path: "2026-05-15/cand.jpg",
+    det_score: 0.9,
+    model_name: "buffalo_s",
+    model_revision: "insightface-0.7.3",
+  });
+  frId = fr.id;
+
+  const sess = await sessionsRepo.create({
+    camera_id: cameraId,
+    person_id: null,
+    started_at: new Date("2026-05-20T14:00:00Z"),
+    last_seen_at: new Date("2026-05-20T14:00:00Z"),
+    detection_count: 1,
+  });
+  const det = await detectionsRepo.create({
+    camera_id: cameraId,
+    person_id: null,
+    session_id: sess.id,
+    face_attrs: { reid_status: "borderline", reid_distance: 0.45 },
+    detected_at: new Date("2026-05-20T14:00:00Z"),
+    raw_event: { test: true },
+    snapshot_path: "2026-05-20/det-new.jpg",
+  });
+  detectionId = det.id;
+
+  const att = await reidMatchAttemptsRepo.createAmbiguous({
+    detection_id: detectionId,
+    candidate_face_record_id: frId,
+    candidate_person_id: candidatePersonId,
+    distance: 0.45,
+  });
+  attemptId = att.id;
+});
+
+afterEach(async () => {
+  const db = getDb();
+  await db.execute(sql`DELETE FROM reid_match_attempts WHERE detection_id = ${detectionId}`);
+  await db.execute(sql`DELETE FROM detections WHERE id = ${detectionId}`);
+  await db.execute(sql`DELETE FROM face_records WHERE id = ${frId}`);
+  await db.execute(sql`DELETE FROM persons WHERE id = ${candidatePersonId}`);
+  await db.execute(sql`DELETE FROM sessions WHERE camera_id = ${cameraId}`);
+  await db.execute(sql`DELETE FROM cameras WHERE id = ${cameraId}`);
+});
+
+describe("reidMatchAttemptsRepo.findPendingEnriched", () => {
+  test("retorna ambiguous joined com detection + face_record + person", async () => {
+    const items = await reidMatchAttemptsRepo.findPendingEnriched(50);
+    const ours = items.find((i) => i.id === attemptId);
+    expect(ours).toBeDefined();
+    expect(ours!.distance).toBe(0.45);
+    expect(ours!.detection.id).toBe(detectionId);
+    expect(ours!.detection.snapshot_path).toBe("2026-05-20/det-new.jpg");
+    expect(ours!.candidate.face_record_id).toBe(frId);
+    expect(ours!.candidate.person_id).toBe(candidatePersonId);
+    expect(ours!.candidate.snapshot_path).toBe("2026-05-15/cand.jpg");
+    expect(ours!.candidate.person_display_name).toBe("João Cliente");
+    expect(ours!.candidate.person_type).toBe("client");
+  });
+
+  test("respeita limit + DESC order", async () => {
+    // criar mais 2 attempts
+    for (let i = 0; i < 2; i++) {
+      const det = await detectionsRepo.create({
+        camera_id: cameraId,
+        person_id: null,
+        session_id: null,
+        face_attrs: {},
+        detected_at: new Date(`2026-05-20T15:0${i}:00Z`),
+        raw_event: {},
+      });
+      await reidMatchAttemptsRepo.createAmbiguous({
+        detection_id: det.id,
+        candidate_face_record_id: frId,
+        candidate_person_id: candidatePersonId,
+        distance: 0.4 + i * 0.02,
+      });
+    }
+    const limited = await reidMatchAttemptsRepo.findPendingEnriched(2);
+    expect(limited.length).toBe(2);
+    // DESC: mais novos primeiro
+    expect(new Date(limited[0].decided_at).getTime()).toBeGreaterThanOrEqual(
+      new Date(limited[1].decided_at).getTime(),
+    );
+  });
+});
+
+describe("reidMatchAttemptsRepo.resolve", () => {
+  test("matched_to_candidate: chama mergeInto(detection.person_id → candidate.person_id) — mas detection.person_id=null aqui", async () => {
+    // Esse cenário é uma sutileza: borderline NÃO cria person nova,
+    // detection vai com person_id=null. resolve(matched_to_candidate)
+    // significa "esta detection nova pertence ao candidate" — então
+    // UPDATE detection.person_id = candidate.person_id (sem merge — não há person src).
+    await reidMatchAttemptsRepo.resolve(attemptId, "matched_to_candidate", "user-1");
+    const db = getDb();
+    const [{ pid }] = await db.execute<{ pid: string }>(
+      sql`SELECT person_id AS pid FROM detections WHERE id = ${detectionId}`,
+    );
+    expect(pid).toBe(candidatePersonId);
+    const [{ d, by }] = await db.execute<{ d: string; by: string }>(
+      sql`SELECT decision AS d, decided_by AS by FROM reid_match_attempts WHERE id = ${attemptId}`,
+    );
+    expect(d).toBe("matched_to_candidate");
+    expect(by).toBe("user");
+  });
+
+  test("rejected_new_person: cria anonymous nova + atribui detection a ela", async () => {
+    await reidMatchAttemptsRepo.resolve(attemptId, "rejected_new_person", "user-2");
+    const db = getDb();
+    const [{ pid }] = await db.execute<{ pid: string | null }>(
+      sql`SELECT person_id AS pid FROM detections WHERE id = ${detectionId}`,
+    );
+    expect(pid).not.toBeNull();
+    expect(pid).not.toBe(candidatePersonId);
+    // person nova é anonymous
+    const newP = await personsRepo.findById(pid!);
+    expect(newP?.person_type).toBe("anonymous");
+    // limpeza extra (afterEach não pega a person nova criada)
+    await db.execute(sql`DELETE FROM persons WHERE id = ${pid}`);
+  });
+});
+```
+
+- [ ] **Step 3: Run test (fail — métodos não existem)**
+
+`bash packages/edge/scripts/run-integration-tests.sh tests/integration/persistence/reid-match-attempts-repo.test.ts`
+
+- [ ] **Step 4: Implement findPendingEnriched + resolve**
+
+Em `packages/edge/src/persistence/repositories/reid-match-attempts.repo.ts`, append ao `reidMatchAttemptsRepo`:
+```typescript
+import { and, desc, eq, sql } from "drizzle-orm";
+import type { ReidMatchPendingEnriched, ReidResolveDecision } from "@vipcam/shared";
+import { detections } from "../schema/detections.js";
+import { faceRecords } from "../schema/face-records.js";
+import { persons } from "../schema/persons.js";
+import { personsRepo } from "./persons.repo.js";
+
+// (... createAmbiguous existente acima ...)
+
+  /**
+   * Lista reid_match_attempts ambiguous enriquecidos com detection + face_record +
+   * candidate person, em DESC por decided_at. Cap em `limit` (UI default 50).
+   */
+  async findPendingEnriched(limit: number): Promise<ReidMatchPendingEnriched[]> {
+    const rows = await getDb()
+      .select({
+        id: reidMatchAttempts.id,
+        distance: reidMatchAttempts.distance,
+        decided_at: reidMatchAttempts.decided_at,
+        det_id: detections.id,
+        det_detected_at: detections.detected_at,
+        det_snapshot_path: detections.snapshot_path,
+        det_camera_id: detections.camera_id,
+        fr_id: faceRecords.id,
+        fr_person_id: faceRecords.person_id,
+        fr_snapshot_path: faceRecords.snapshot_path,
+        p_display_name: persons.display_name,
+        p_person_type: persons.person_type,
+      })
+      .from(reidMatchAttempts)
+      .innerJoin(detections, eq(detections.id, reidMatchAttempts.detection_id))
+      .innerJoin(faceRecords, eq(faceRecords.id, reidMatchAttempts.candidate_face_record_id))
+      .innerJoin(persons, eq(persons.id, reidMatchAttempts.candidate_person_id))
+      .where(eq(reidMatchAttempts.decision, "ambiguous"))
+      .orderBy(desc(reidMatchAttempts.decided_at))
+      .limit(limit);
+
+    return rows.map((r) => ({
+      id: r.id,
+      distance: r.distance,
+      decided_at: r.decided_at.toISOString(),
+      detection: {
+        id: r.det_id,
+        detected_at: r.det_detected_at.toISOString(),
+        snapshot_path: r.det_snapshot_path,
+        camera_id: r.det_camera_id,
+      },
+      candidate: {
+        face_record_id: r.fr_id,
+        person_id: r.fr_person_id,
+        snapshot_path: r.fr_snapshot_path,
+        person_display_name: r.p_display_name,
+        person_type: r.p_person_type,
+      },
+    }));
+  },
+
+  /**
+   * Resolve um reid_match_attempt ambiguous.
+   *
+   * - `matched_to_candidate`: detection nova pertence ao candidate person.
+   *   Se detection.person_id já existe (cenário raro pós-borderline com
+   *   inheritance), chamamos mergeInto(detection.person_id, candidate.person_id).
+   *   Senão UPDATE detection.person_id = candidate.person_id (sem person src
+   *   pra merge — borderline NÃO cria person, detection vai null).
+   *
+   * - `rejected_new_person`: cria person anonymous nova, UPDATE detection
+   *   apontando pra ela. (Operador disse "pessoas diferentes" — borderline
+   *   tomou o caminho 'new_person' depois do fato.)
+   */
+  async resolve(
+    attemptId: string,
+    decision: ReidResolveDecision,
+    userId: string,
+  ): Promise<void> {
+    const db = getDb();
+    // Lookup do attempt + detection + candidate
+    const [att] = await db
+      .select({
+        detection_id: reidMatchAttempts.detection_id,
+        candidate_person_id: reidMatchAttempts.candidate_person_id,
+        det_current_person_id: detections.person_id,
+        det_detected_at: detections.detected_at,
+      })
+      .from(reidMatchAttempts)
+      .innerJoin(detections, eq(detections.id, reidMatchAttempts.detection_id))
+      .where(and(
+        eq(reidMatchAttempts.id, attemptId),
+        eq(reidMatchAttempts.decision, "ambiguous"),
+      ))
+      .limit(1);
+
+    if (!att) {
+      throw new Error(`reid_match_attempt ${attemptId} not found or not ambiguous`);
+    }
+
+    if (decision === "matched_to_candidate") {
+      if (att.det_current_person_id && att.det_current_person_id !== att.candidate_person_id) {
+        // Cenário raro: detection já tem person (via inheritance ou
+        // resolve anterior). Merge a antiga em candidate.
+        await personsRepo.mergeInto(att.det_current_person_id, att.candidate_person_id, userId);
+      } else {
+        // Caso comum: detection.person_id era null, só atribui.
+        await db.execute(sql`
+          UPDATE detections SET person_id = ${att.candidate_person_id}
+          WHERE id = ${att.detection_id}
+        `);
+        // incrementa visit count pra refletir a visita
+        await personsRepo.incrementVisitCount(att.candidate_person_id, att.det_detected_at);
+      }
+    } else {
+      // rejected_new_person: cria anonymous + atribui
+      const newPerson = await personsRepo.create({
+        person_type: "anonymous",
+        first_seen_at: att.det_detected_at,
+        last_seen_at: att.det_detected_at,
+      });
+      await db.execute(sql`
+        UPDATE detections SET person_id = ${newPerson.id}
+        WHERE id = ${att.detection_id}
+      `);
+    }
+
+    // Marca attempt resolvido
+    await db.execute(sql`
+      UPDATE reid_match_attempts
+      SET decision = ${decision}, decided_by = 'user', decided_at = now()
+      WHERE id = ${attemptId}
+    `);
+  },
+```
+
+- [ ] **Step 5: Run tests (pass)**
+
+`bash packages/edge/scripts/run-integration-tests.sh tests/integration/persistence/reid-match-attempts-repo.test.ts` → 4 PASS (2 find + 2 resolve).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/edge/src/persistence/repositories/reid-match-attempts.repo.ts \
+        packages/shared/src/types/reid-pending.ts \
+        packages/shared/src/index.ts \
+        packages/edge/tests/integration/persistence/reid-match-attempts-repo.test.ts
+git commit -m "feat(edge): Onda 7 — reidMatchAttemptsRepo.findPendingEnriched + resolve (merge/reject) + shared types"
+```
+
+---
+
+### Task 18: API routes — GET /api/matches/reid/pending + POST /:id/resolve
+
+**Spec ref:** §5.3 (endpoints).
+
+**Files:**
+- Create: `packages/edge/src/api/routes/matches-reid.ts`
+- Modify: `packages/edge/src/api/server.ts` (mount route + auth via `apiKeyMiddleware`)
+- Test: `packages/edge/tests/unit/api/routes/matches-reid.test.ts`
+
+- [ ] **Step 1: Failing test**
+
+`packages/edge/tests/unit/api/routes/matches-reid.test.ts`:
+```typescript
+import { describe, expect, test } from "bun:test";
+import type { ReidMatchPendingEnriched } from "@vipcam/shared";
+import { createMatchesReidRoutes } from "../../../../src/api/routes/matches-reid.js";
+
+const fakeItem: ReidMatchPendingEnriched = {
+  id: "rma-1",
+  distance: 0.45,
+  decided_at: "2026-05-20T14:00:00Z",
+  detection: {
+    id: "det-1",
+    detected_at: "2026-05-20T14:00:00Z",
+    snapshot_path: "2026-05-20/det-1.jpg",
+    camera_id: "cam-1",
+  },
+  candidate: {
+    face_record_id: "fr-1",
+    person_id: "p-1",
+    snapshot_path: "2026-05-15/cand.jpg",
+    person_display_name: "João",
+    person_type: "client",
+  },
+};
+
+function app(deps: {
+  findPending: (limit: number) => Promise<ReidMatchPendingEnriched[]>;
+  resolve: (id: string, decision: string, userId: string) => Promise<void>;
+}) {
+  return createMatchesReidRoutes(deps);
+}
+
+describe("GET /pending", () => {
+  test("default limit=50", async () => {
+    let received: number | undefined;
+    const r = await app({
+      findPending: async (l) => {
+        received = l;
+        return [fakeItem];
+      },
+      resolve: async () => undefined,
+    }).request("/pending");
+    expect(r.status).toBe(200);
+    expect(received).toBe(50);
+    expect(await r.json()).toEqual([fakeItem]);
+  });
+
+  test("limit=200 boundary OK", async () => {
+    const r = await app({
+      findPending: async () => [],
+      resolve: async () => undefined,
+    }).request("/pending?limit=200");
+    expect(r.status).toBe(200);
+  });
+
+  test("invalid limit → 400", async () => {
+    for (const bad of ["0", "201", "-1", "abc", "1.5"]) {
+      const r = await app({
+        findPending: async () => [],
+        resolve: async () => undefined,
+      }).request(`/pending?limit=${bad}`);
+      expect(r.status).toBe(400);
+    }
+  });
+});
+
+describe("POST /:id/resolve", () => {
+  test("matched_to_candidate → 204", async () => {
+    let calls: Array<[string, string, string]> = [];
+    const r = await app({
+      findPending: async () => [],
+      resolve: async (id, decision, user) => {
+        calls.push([id, decision, user]);
+      },
+    }).request("/rma-1/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "matched_to_candidate" }),
+    });
+    expect(r.status).toBe(204);
+    expect(calls).toEqual([["rma-1", "matched_to_candidate", "system"]]);
+  });
+
+  test("rejected_new_person → 204", async () => {
+    let received: string | undefined;
+    const r = await app({
+      findPending: async () => [],
+      resolve: async (_id, decision) => {
+        received = decision;
+      },
+    }).request("/rma-2/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "rejected_new_person" }),
+    });
+    expect(r.status).toBe(204);
+    expect(received).toBe("rejected_new_person");
+  });
+
+  test("decision inválida → 400", async () => {
+    const r = await app({
+      findPending: async () => [],
+      resolve: async () => undefined,
+    }).request("/rma-1/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "something_else" }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  test("resolve throws → 409 Conflict (race condition: já resolvido)", async () => {
+    const r = await app({
+      findPending: async () => [],
+      resolve: async () => {
+        throw new Error("not found or not ambiguous");
+      },
+    }).request("/rma-1/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "matched_to_candidate" }),
+    });
+    expect(r.status).toBe(409);
+  });
+});
+```
+
+- [ ] **Step 2: Run test (fail — module não existe)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/routes/matches-reid.test.ts`
+
+- [ ] **Step 3: Implement route**
+
+`packages/edge/src/api/routes/matches-reid.ts`:
+```typescript
+import type { ReidMatchPendingEnriched, ReidResolveDecision } from "@vipcam/shared";
+import { Hono } from "hono";
+
+export interface MatchesReidDeps {
+  findPending: (limit: number) => Promise<ReidMatchPendingEnriched[]>;
+  /** userId é placeholder "system" enquanto NextAuth não chega (Onda futura). */
+  resolve: (id: string, decision: ReidResolveDecision, userId: string) => Promise<void>;
+}
+
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
+const VALID_DECISIONS: ReidResolveDecision[] = ["matched_to_candidate", "rejected_new_person"];
+
+/**
+ * Reid borderline review endpoints (Onda 7 §5.3).
+ *
+ * Auth via apiKeyMiddleware aplicado em /api/matches/* no server.ts (já existe
+ * pra aba temporal). userId placeholder "system" porque NextAuth é Onda futura.
+ */
+export function createMatchesReidRoutes(deps: MatchesReidDeps): Hono {
+  const r = new Hono();
+
+  r.get("/pending", async (c) => {
+    const raw = c.req.query("limit");
+    let limit = DEFAULT_LIMIT;
+    if (raw !== undefined) {
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1 || n > MAX_LIMIT) {
+        return c.json({ error: `limit must be 1..${MAX_LIMIT}` }, 400);
+      }
+      limit = n;
+    }
+    return c.json(await deps.findPending(limit));
+  });
+
+  r.post("/:id/resolve", async (c) => {
+    const id = c.req.param("id");
+    const body = await c.req.json().catch(() => null);
+    const decision = body?.decision;
+    if (!decision || !VALID_DECISIONS.includes(decision)) {
+      return c.json({ error: `decision must be one of ${VALID_DECISIONS.join("|")}` }, 400);
+    }
+    try {
+      await deps.resolve(id, decision, "system");
+      return new Response(null, { status: 204 });
+    } catch (err) {
+      // Race: outro operador resolveu primeiro, ou attempt já mudou de estado.
+      // Trata como 409 Conflict — UI deve refresh.
+      return c.json(
+        { error: err instanceof Error ? err.message : "conflict" },
+        409,
+      );
+    }
+  });
+
+  return r;
+}
+```
+
+- [ ] **Step 4: Mount no server.ts**
+
+Em `packages/edge/src/api/server.ts`, após o mount existente de `/api/matches`:
+```typescript
+import { createMatchesReidRoutes } from "./routes/matches-reid.js";
+import { reidMatchAttemptsRepo } from "../persistence/repositories/index.js";
+
+// (... dentro de createServer, após app.route("/api/matches", ...) ...)
+app.route(
+  "/api/matches/reid",
+  createMatchesReidRoutes({
+    findPending: (limit) => reidMatchAttemptsRepo.findPendingEnriched(limit),
+    resolve: (id, decision, userId) => reidMatchAttemptsRepo.resolve(id, decision, userId),
+  }),
+);
+```
+
+`apiKeyMiddleware` aplicado em `/api/matches/*` já cobre o `/reid` subpath — sem mudança adicional.
+
+- [ ] **Step 5: Run test (pass)**
+
+`bun --filter '@vipcam/edge' test tests/unit/api/routes/matches-reid.test.ts` → 7 PASS.
+
+- [ ] **Step 6: Run full edge tests**
+
+`bun --filter '@vipcam/edge' test`
+Expected: tudo verde.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/edge/src/api/routes/matches-reid.ts \
+        packages/edge/src/api/server.ts \
+        packages/edge/tests/unit/api/routes/matches-reid.test.ts
+git commit -m "feat(edge): Onda 7 — GET /api/matches/reid/pending + POST /:id/resolve (auth herdado de /matches/*)"
+```
+
+---
+
+### Task 19: Match temporal — política de no-op vs ambiguous quando reid já decidiu
+
+**Spec ref:** §5.1 (table — match temporal vê detection.person_id, decide NO-OP ou cria ambiguous).
+
+**Files:**
+- Modify: `packages/edge/src/match-temp/orchestrator.ts` (lógica do orchestrator existente)
+- Test: `packages/edge/tests/unit/match-temp/orchestrator-reid-aware.test.ts`
+
+> **Nota:** match temporal já existe (Onda 2-3). Esta task adapta a lógica pra não-criar ambiguous quando reid e ERP CONCORDAM, e criar ambiguous quando DIVERGEM. NÃO é re-escrita completa — só adiciona um branch.
+
+- [ ] **Step 1: Read existing orchestrator pra entender o pattern atual**
+
+```bash
+cat packages/edge/src/match-temp/orchestrator.ts | head -80
+```
+Observar: como decide auto-match vs ambiguous hoje (provavelmente: 1 candidato → auto, 2+ → ambiguous, 0 → no-op).
+
+- [ ] **Step 2: Failing test (4 cenários do §5.1 table)**
+
+`packages/edge/tests/unit/match-temp/orchestrator-reid-aware.test.ts`:
+```typescript
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+// Mock repositories
+const mockData = {
+  detection: null as null | { id: string; person_id: string | null },
+  candidateClients: [] as Array<{ erp_id: string; person_id: string }>,
+  createdAmbiguous: [] as unknown[],
+  autoMatched: [] as Array<[string, string]>,
+};
+
+const installMocks = () => {
+  mock.module("../../../src/persistence/repositories/match-attempts.repo.js", () => ({
+    matchAttemptsRepo: {
+      createAmbiguous: async (data: unknown) => {
+        mockData.createdAmbiguous.push(data);
+        return { id: "ma-1" };
+      },
+      createAutoMatched: async (detId: string, checkin: string) => {
+        mockData.autoMatched.push([detId, checkin]);
+      },
+    },
+  }));
+  // Mock que findCandidateDetectionsForCheckin retorna a detection mockada
+  mock.module("../../../src/persistence/repositories/detections.repo.js", () => ({
+    detectionsRepo: {
+      findCandidatesInWindow: async () => (mockData.detection ? [mockData.detection] : []),
+    },
+  }));
+  mock.module("../../../src/persistence/repositories/persons.repo.js", () => ({
+    personsRepo: {
+      findByErpClientId: async (erpId: string) => {
+        const found = mockData.candidateClients.find((c) => c.erp_id === erpId);
+        return found ? { id: found.person_id, person_type: "client", erp_client_id: erpId } : null;
+      },
+    },
+  }));
+};
+installMocks();
+
+import { processCheckinAgainstDetections } from "../../../src/match-temp/orchestrator.js";
+
+beforeEach(() => {
+  mockData.detection = null;
+  mockData.candidateClients = [];
+  mockData.createdAmbiguous = [];
+  mockData.autoMatched = [];
+  installMocks();
+});
+
+const baseCheckin = {
+  erp_id: "checkin-1",
+  client_id: "cliente-erp-1",
+  occurred_at: new Date(),
+  event_type: "in" as const,
+};
+
+describe("processCheckinAgainstDetections — reid-aware branches (Onda 7 §5.1)", () => {
+  test("detection.person_id IS NULL + 1 candidate → comportamento atual (auto-match)", async () => {
+    mockData.detection = { id: "det-1", person_id: null };
+    mockData.candidateClients = [{ erp_id: "cliente-erp-1", person_id: "p-1" }];
+    await processCheckinAgainstDetections(baseCheckin);
+    expect(mockData.autoMatched).toEqual([["det-1", "checkin-1"]]);
+    expect(mockData.createdAmbiguous.length).toBe(0);
+  });
+
+  test("detection.person_id == cliente do checkin → NO-OP (já concordam)", async () => {
+    mockData.detection = { id: "det-2", person_id: "p-1" };
+    mockData.candidateClients = [{ erp_id: "cliente-erp-1", person_id: "p-1" }];
+    await processCheckinAgainstDetections(baseCheckin);
+    expect(mockData.autoMatched.length).toBe(0);
+    expect(mockData.createdAmbiguous.length).toBe(0);
+  });
+
+  test("detection.person_id == anônima X, checkin sugere cliente Y → ambiguous", async () => {
+    mockData.detection = { id: "det-3", person_id: "p-anon-X" };
+    mockData.candidateClients = [{ erp_id: "cliente-erp-1", person_id: "p-cliente-Y" }];
+    await processCheckinAgainstDetections(baseCheckin);
+    expect(mockData.createdAmbiguous.length).toBe(1);
+  });
+
+  test("detection.person_id == cliente W já-ligado, checkin sugere cliente Y → ambiguous (reid pode estar errado)", async () => {
+    mockData.detection = { id: "det-4", person_id: "p-cliente-W" };
+    mockData.candidateClients = [{ erp_id: "cliente-erp-1", person_id: "p-cliente-Y" }];
+    await processCheckinAgainstDetections(baseCheckin);
+    expect(mockData.createdAmbiguous.length).toBe(1);
+  });
+});
+```
+
+- [ ] **Step 3: Run test (fail — lógica nova não-implementada)**
+
+`bun --filter '@vipcam/edge' test tests/unit/match-temp/orchestrator-reid-aware.test.ts`
+
+- [ ] **Step 4: Modify orchestrator.ts**
+
+Localizar a função `processCheckinAgainstDetections` (ou nome equivalente — checar arquivo) e antes de criar ambiguous OU auto-match, adicionar branch:
+```typescript
+// Onda 7 §5.1: política reid-aware. Pra cada detection candidata na janela,
+// comparar detection.person_id com o cliente que o checkin sugere:
+// - NULL + 1 candidato → auto-match (comportamento atual)
+// - NULL + 2+ → ambiguous (comportamento atual)
+// - == sugerido → NO-OP (concordam, nada a fazer)
+// - != sugerido → AMBIGUOUS (divergem, humano decide via UI temporal)
+for (const det of candidates) {
+  const candidatePerson = await personsRepo.findByErpClientId(checkin.client_id);
+  if (det.person_id === null) {
+    if (candidates.length === 1 && candidatePerson) {
+      await matchAttemptsRepo.createAutoMatched(det.id, checkin.erp_id);
+    } else {
+      await matchAttemptsRepo.createAmbiguous({ detection_id: det.id, erp_checkin_id: checkin.erp_id });
+    }
+  } else if (candidatePerson && det.person_id === candidatePerson.id) {
+    // NO-OP — reid e ERP concordam
+    continue;
+  } else {
+    // Divergem — reid disse X, ERP sugere Y. Humano decide.
+    await matchAttemptsRepo.createAmbiguous({ detection_id: det.id, erp_checkin_id: checkin.erp_id });
+  }
+}
+```
+
+> **Importante:** o código exato depende do schema atual do orchestrator. **Não** rewrite tudo — só adicione/ajuste os branches. Se o orchestrator atual já fizer a parte do "NULL" branch, manter, e adicionar APENAS o branch "person_id não-null".
+
+- [ ] **Step 5: Run test (pass)**
+
+`bun --filter '@vipcam/edge' test tests/unit/match-temp/orchestrator-reid-aware.test.ts` → 4 PASS.
+
+- [ ] **Step 6: Run existing orchestrator/temporal tests pra confirmar não-regrediu**
+
+`bun --filter '@vipcam/edge' test tests/unit/match-temp/`
+Expected: tests existentes (Onda 2 + Onda 3) continuam verdes.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/edge/src/match-temp/orchestrator.ts \
+        packages/edge/tests/unit/match-temp/orchestrator-reid-aware.test.ts
+git commit -m "feat(edge): Onda 7 — match-temp orchestrator vira reid-aware (NO-OP se concorda, ambiguous se diverge)"
+```
+
+---
+
