@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
+import { getDb } from "../../../src/persistence/db.js";
 import { detectionsRepo } from "../../../src/persistence/repositories/detections.repo.js";
 import { faceRecordsRepo } from "../../../src/persistence/repositories/face-records.repo.js";
 import { personsRepo } from "../../../src/persistence/repositories/persons.repo.js";
 import { reidMatchAttemptsRepo } from "../../../src/persistence/repositories/reid-match-attempts.repo.js";
 import { sessionsRepo } from "../../../src/persistence/repositories/sessions.repo.js";
-import { getDb } from "../../../src/persistence/db.js";
 
 function vec(s: number): number[] {
   return Array.from({ length: 512 }, (_, i) => (s * (i + 1)) / 1e6);

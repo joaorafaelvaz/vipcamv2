@@ -76,11 +76,16 @@ describe("useResolveReid", () => {
     function Probe() {
       const m = useResolveReid();
       React.useEffect(() => {
-        resolveFn = (d) => m.mutate(d as { id: string; decision: "matched_to_candidate" | "rejected_new_person" });
+        resolveFn = (d) =>
+          m.mutate(d as { id: string; decision: "matched_to_candidate" | "rejected_new_person" });
       }, [m]);
       return null;
     }
-    render(<QueryClientProvider client={qc}><Probe /></QueryClientProvider>);
+    render(
+      <QueryClientProvider client={qc}>
+        <Probe />
+      </QueryClientProvider>,
+    );
     await waitFor(() => expect(resolveFn).not.toBeNull());
     resolveFn!({ id: "rma-1", decision: "matched_to_candidate" });
     await waitFor(() => expect(postCalls.length).toBe(1));

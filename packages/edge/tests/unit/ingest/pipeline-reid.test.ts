@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 // NOTA (bun:test mock.module process-wide): `mock.module` é PROCESS-WIDE,
 // então só mockamos os 5 REPOS (paths leaf que nenhum outro suite importa).
 // NÃO mockamos:
@@ -10,11 +11,10 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { ReidOutput } from "../../../src/api/reid/orchestrator.js";
 
 let orchestratorResult: ReidOutput = { personId: null, status: "disabled" };
-let capturedFrame: Buffer = Buffer.from([0xff, 0xd8]);
+const capturedFrame: Buffer = Buffer.from([0xff, 0xd8]);
 let insertedDetection: Record<string, unknown> | null = null;
 let createdPerson: Record<string, unknown> | null = null;
 let createdFaceRecord: Record<string, unknown> | null = null;

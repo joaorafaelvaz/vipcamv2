@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { decideMatch } from "../../../../src/api/reid/match-policy.js";
+import { getDb } from "../../../../src/persistence/db.js";
 import { faceRecordsRepo } from "../../../../src/persistence/repositories/face-records.repo.js";
 import { personsRepo } from "../../../../src/persistence/repositories/persons.repo.js";
-import { getDb } from "../../../../src/persistence/db.js";
 
 let personId: string;
 
 function vecFromBase(seed: number, jitter = 0): number[] {
   return Array.from({ length: 512 }, (_, i) => {
     const v = ((seed * (i + 1)) % 1000) / 1000;
-    return v + (Math.sin(i + jitter) * 0.001);
+    return v + Math.sin(i + jitter) * 0.001;
   });
 }
 

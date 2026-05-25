@@ -81,11 +81,7 @@ export const reidMatchAttemptsRepo = {
    *
    * - `rejected_new_person`: cria person anonymous nova, UPDATE detection.
    */
-  async resolve(
-    attemptId: string,
-    decision: ReidResolveDecision,
-    userId: string,
-  ): Promise<void> {
+  async resolve(attemptId: string, decision: ReidResolveDecision, userId: string): Promise<void> {
     const db = getDb();
     const [att] = await db
       .select({
@@ -96,12 +92,7 @@ export const reidMatchAttemptsRepo = {
       })
       .from(reidMatchAttempts)
       .innerJoin(detections, eq(detections.id, reidMatchAttempts.detection_id))
-      .where(
-        and(
-          eq(reidMatchAttempts.id, attemptId),
-          eq(reidMatchAttempts.decision, "ambiguous"),
-        ),
-      )
+      .where(and(eq(reidMatchAttempts.id, attemptId), eq(reidMatchAttempts.decision, "ambiguous")))
       .limit(1);
 
     if (!att) {

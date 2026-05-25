@@ -1,7 +1,7 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { pruneOlderThan, saveCrop } from "../../../../src/api/reid/snapshot-store.js";
 
 let tmpDir: string;

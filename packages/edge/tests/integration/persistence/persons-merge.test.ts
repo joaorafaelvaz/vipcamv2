@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
+import { getDb } from "../../../src/persistence/db.js";
 import { faceRecordsRepo } from "../../../src/persistence/repositories/face-records.repo.js";
 import { personsRepo } from "../../../src/persistence/repositories/persons.repo.js";
-import { getDb } from "../../../src/persistence/db.js";
 
 let srcId: string;
 let dstId: string;
@@ -33,7 +33,9 @@ beforeEach(async () => {
 
 afterEach(async () => {
   const db = getDb();
-  await db.execute(sql`DELETE FROM person_merge_audit WHERE src_id IN (${srcId}, ${dstId}) OR dst_id IN (${srcId}, ${dstId})`);
+  await db.execute(
+    sql`DELETE FROM person_merge_audit WHERE src_id IN (${srcId}, ${dstId}) OR dst_id IN (${srcId}, ${dstId})`,
+  );
   await db.execute(sql`DELETE FROM face_records WHERE person_id IN (${srcId}, ${dstId})`);
   await db.execute(sql`DELETE FROM persons WHERE id IN (${srcId}, ${dstId})`);
 });
@@ -78,7 +80,12 @@ describe("personsRepo.mergeInto (Onda 7 §5.2)", () => {
     );
     expect(frCountRows[0]?.c).toBe(5);
 
-    const audit = await db.execute<{ id: string; src_id: string; dst_id: string; merged_by: string }>(
+    const audit = await db.execute<{
+      id: string;
+      src_id: string;
+      dst_id: string;
+      merged_by: string;
+    }>(
       sql`SELECT id, src_id, dst_id, merged_by FROM person_merge_audit WHERE src_id = ${srcId} AND dst_id = ${dstId}`,
     );
     expect(audit.length).toBe(1);

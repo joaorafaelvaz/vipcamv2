@@ -28,11 +28,12 @@ describe("reid-client.embed", () => {
       });
     }) as unknown as typeof globalThis.fetch;
 
-    const result = await embed(
-      "http://127.0.0.1:5005",
-      Buffer.from("fake-frame-bytes"),
-      { x: 10, y: 20, w: 100, h: 100 },
-    );
+    const result = await embed("http://127.0.0.1:5005", Buffer.from("fake-frame-bytes"), {
+      x: 10,
+      y: 20,
+      w: 100,
+      h: 100,
+    });
 
     expect(result).toEqual(fakeResult);
     expect(receivedUrl).toBe("http://127.0.0.1:5005/embed");

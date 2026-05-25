@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 // NOTA (bun:test mock.module process-wide): este arquivo registra mocks
 // de `node-cron` + 4 deps do scheduler. `mock.module` em bun:test é
 // PROCESS-WIDE — outros arquivos do suite que mockam os mesmos paths
@@ -14,7 +15,6 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 const captured: Array<{
   cronExpr: string;
@@ -45,8 +45,8 @@ const installMocks = () => {
 installMocks();
 
 import { resetEnvCache } from "../../../src/config/env.js";
-import { startScheduler } from "../../../src/erp-sync/scheduler.js";
 import { _resetHealth, getJobHealth } from "../../../src/erp-sync/scheduler-health.js";
+import { startScheduler } from "../../../src/erp-sync/scheduler.js";
 
 let tmpSnapsDir = "";
 let originalEnv: Record<string, string | undefined>;

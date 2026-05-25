@@ -45,7 +45,8 @@ export function ReidMatchCard({ item, onResolve, loading }: ReidMatchCardProps) 
       <div className="text-sm text-slate-600 mb-4">
         Distância cosine: <span className="font-mono">{item.distance.toFixed(3)}</span>
         {" — "}
-        revisado pra: <span className="font-mono">{new Date(item.decided_at).toLocaleString()}</span>
+        revisado pra:{" "}
+        <span className="font-mono">{new Date(item.decided_at).toLocaleString()}</span>
       </div>
 
       <div className="flex gap-2">

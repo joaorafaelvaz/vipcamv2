@@ -1,8 +1,8 @@
 "use client";
 
-import { ReidMatchCard } from "@/components/reid-match-card";
 import { MatchDetail } from "@/components/match-detail";
 import { MatchListItem } from "@/components/match-list-item";
+import { ReidMatchCard } from "@/components/reid-match-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMatchesPending } from "@/lib/queries/matches";
@@ -47,7 +47,9 @@ export default function MatchesPage() {
                   : `${temporalList.length} pendente${temporalList.length === 1 ? "" : "s"}`}
               </div>
               {tLoading ? (
-                <div className="p-2"><Skeleton className="h-12" /></div>
+                <div className="p-2">
+                  <Skeleton className="h-12" />
+                </div>
               ) : temporalList.length === 0 ? (
                 <div className="p-4 text-slate-500 text-sm text-center">
                   Nenhum match pendente — tudo resolvido!
@@ -78,7 +80,9 @@ export default function MatchesPage() {
         <TabsContent value="reid">
           <div className="bg-white border rounded-md" style={{ minHeight: 500 }}>
             {rLoading ? (
-              <div className="p-4"><Skeleton className="h-32" /></div>
+              <div className="p-4">
+                <Skeleton className="h-32" />
+              </div>
             ) : reidList.length === 0 ? (
               <div className="p-8 text-slate-500 text-sm text-center italic">
                 Nenhum borderline pendente — calibração funcionando!

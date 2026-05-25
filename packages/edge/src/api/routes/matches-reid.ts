@@ -45,10 +45,7 @@ export function createMatchesReidRoutes(deps: MatchesReidDeps): Hono {
       return new Response(null, { status: 204 });
     } catch (err) {
       // Race: outro operador resolveu primeiro, ou attempt já mudou de estado.
-      return c.json(
-        { error: err instanceof Error ? err.message : "conflict" },
-        409,
-      );
+      return c.json({ error: err instanceof Error ? err.message : "conflict" }, 409);
     }
   });
 

@@ -27,9 +27,9 @@ describe("env Onda 7 vars", () => {
   });
 
   test("REID_DIST_STRICT rejects > REID_DIST_LOOSE (refine)", () => {
-    expect(() =>
-      parseEnv({ ...BASE, REID_DIST_STRICT: "0.6", REID_DIST_LOOSE: "0.5" }),
-    ).toThrow(/REID_DIST_STRICT.*REID_DIST_LOOSE/);
+    expect(() => parseEnv({ ...BASE, REID_DIST_STRICT: "0.6", REID_DIST_LOOSE: "0.5" })).toThrow(
+      /REID_DIST_STRICT.*REID_DIST_LOOSE/,
+    );
   });
 
   test("REID_BASE_URL defaults to http://127.0.0.1:5005", () => {

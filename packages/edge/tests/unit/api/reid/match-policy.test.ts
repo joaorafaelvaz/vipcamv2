@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  classifyDistance,
-  type MatchDecision,
-} from "../../../../src/api/reid/match-policy.js";
+import { type MatchDecision, classifyDistance } from "../../../../src/api/reid/match-policy.js";
 
 describe("classifyDistance — pure decision tree", () => {
   const strict = 0.35;

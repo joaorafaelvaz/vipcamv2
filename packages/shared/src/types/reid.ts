@@ -30,9 +30,9 @@ export interface ReidBBox {
 
 /** Status do pipeline reid populado em detections.face_attrs.reid_status. */
 export type ReidStatus =
-  | "matched_strict"     // auto-link a person existente
-  | "borderline"         // pediu revisão humana
-  | "new_person"         // criou anonymous nova
-  | "unavailable"        // sidecar down — graceful degrade
-  | "inherited_session"  // herdou person_id de detection prévia da mesma sessão
-  | "disabled";          // REID_ENABLED=false
+  | "matched_strict" // auto-link a person existente
+  | "borderline" // pediu revisão humana
+  | "new_person" // criou anonymous nova
+  | "unavailable" // sidecar down — graceful degrade
+  | "inherited_session" // herdou person_id de detection prévia da mesma sessão
+  | "disabled"; // REID_ENABLED=false
