@@ -24,6 +24,14 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/var/lib/vipcam
 Environment=INSIGHTFACE_HOME=/var/lib/vipcam/.insightface
 ExecStart=/usr/local/bin/uv run uvicorn src.main:app --host 127.0.0.1 --port 5005
+# Onda 7 §3.3: pre-warm via /warmup (endpoint dedicado idempotente).
+# Sem isso, primeira /embed em runtime sofre ~5,5s de cold-start. Usamos
+# --fail aqui — se /warmup retornar 500 (modelo falha em carregar), o
+# systemd marca o unit como failed e Restart=on-failure tenta de novo.
+# --retry 30 + --retry-connrefused absorve a janela de boot do uvicorn.
+ExecStartPost=/usr/bin/curl --fail --silent --output /dev/null \
+    --retry 30 --retry-delay 1 --retry-connrefused \
+    -X POST http://127.0.0.1:5005/warmup
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
