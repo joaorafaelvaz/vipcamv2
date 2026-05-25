@@ -1,4 +1,6 @@
 import cron from "node-cron";
+import { pruneOlderThan } from "../api/reid/snapshot-store.js";
+import { getEnv } from "../config/env.js";
 import { processAllPendingCheckins } from "../match-temp/orchestrator.js";
 import { logger } from "../obs/logger.js";
 import { pollCheckins } from "./checkins.js";
@@ -79,13 +81,29 @@ export function startScheduler(): SchedulerHandle {
     }),
   );
 
-  logger.info("ERP sync scheduler started (employees=hourly, clients=15min, checkins=30s)");
+  // 03:00 BRT — timezone explícito porque VPS systemd roda em UTC e nesse caso
+  // "0 3 * * *" puro fire-aria às 00:00 BRT (3h cedo). Pattern espelha
+  // METRICS_TZ pra consistência (Onda 7 §2.4 + plan-reviewer round 2).
+  const snapJob = cron.schedule(
+    "0 3 * * *",
+    withRunningGuard("snapshot_retention", async () => {
+      const env = getEnv();
+      const deleted = await pruneOlderThan({ baseDir: env.SNAPSHOTS_DIR, days: 30 });
+      logger.info({ deleted }, "snapshot retention job — pruned old date dirs");
+    }),
+    { timezone: "America/Sao_Paulo" },
+  );
+
+  logger.info(
+    "ERP sync scheduler started (employees=hourly, clients=15min, checkins=30s, snapshot_retention=daily-03:00)",
+  );
 
   return {
     stop() {
       empJob.stop();
       cliJob.stop();
       chkJob.stop();
+      snapJob.stop();
       logger.info("ERP sync scheduler stopped");
     },
   };
