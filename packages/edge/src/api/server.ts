@@ -32,6 +32,7 @@ import { recentDetections } from "./events.queries.js";
 import { listPendingEnriched } from "./match-pending.js";
 import { overviewMetrics } from "./metrics.queries.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
+import { pingReid } from "./reid/health.js";
 import { createDashboardRoutes } from "./routes/dashboard.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
 import { createErpRoutes } from "./routes/erp.js";
@@ -78,6 +79,11 @@ export function createServer() {
         };
       }
     }
+
+    // I4 + Onda 7: checks.reid sync (timeout 1s). REID_ENABLED=false →
+    // disabled flag e não degrada overall status.
+    const reidCheck = await pingReid(env.REID_BASE_URL, { disabled: !env.REID_ENABLED });
+    checks.reid = reidCheck;
 
     // I4 (review 2026-05-13): expõe estado de cada job do scheduler. Após
     // N failures consecutivas, o check fica ok=false e degrada o overall
