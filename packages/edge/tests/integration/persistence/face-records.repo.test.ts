@@ -8,6 +8,11 @@ beforeEach(async () => {
   await truncateAll();
 });
 
+// Onda 7: embedding agora é NOT NULL. Os testes deste arquivo focam em
+// camera_face_id/person_id, não em similaridade vetorial — usamos um vetor
+// placeholder zerado só pra satisfazer a constraint do schema.
+const ZERO_EMBEDDING: number[] = Array(512).fill(0);
+
 afterAll(async () => {
   await closeDb();
 });
@@ -26,6 +31,7 @@ describe("faceRecordsRepo", () => {
       camera_face_id: "cam-face-42",
       snapshot_path: "/snaps/p1.jpg",
       is_primary: true,
+      embedding: ZERO_EMBEDDING,
     });
 
     const found = await faceRecordsRepo.findByCameraFaceId("cam-face-42");
@@ -45,11 +51,13 @@ describe("faceRecordsRepo", () => {
       person_id: person.id,
       snapshot_path: "/snaps/p1-secondary.jpg",
       is_primary: false,
+      embedding: ZERO_EMBEDDING,
     });
     const primary = await faceRecordsRepo.create({
       person_id: person.id,
       snapshot_path: "/snaps/p1-primary.jpg",
       is_primary: true,
+      embedding: ZERO_EMBEDDING,
     });
 
     const found = await faceRecordsRepo.findPrimaryByPersonId(person.id);

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "../db.js";
 import { type FaceRecord, type NewFaceRecord, faceRecords } from "../schema/face-records.js";
 
@@ -39,5 +39,66 @@ export const faceRecordsRepo = {
 
   async delete(id: string): Promise<void> {
     await getDb().delete(faceRecords).where(eq(faceRecords.id, id));
+  },
+
+  /**
+   * Insere face_record + FIFO eviction (cap=5) numa transação.
+   * Pattern Onda 7 §4.2: SELECT FOR UPDATE defensivo (pipeline atual é
+   * single-threaded mas paralelização futura não-quebra).
+   */
+  async insertAndEvict(data: Omit<NewFaceRecord, "id" | "created_at">): Promise<FaceRecord> {
+    return await getDb().transaction(async (tx) => {
+      // Lock dos existentes pra evitar race com outro insert na mesma person
+      await tx.execute(sql`
+        SELECT id FROM face_records WHERE person_id = ${data.person_id} FOR UPDATE
+      `);
+      const [inserted] = await tx.insert(faceRecords).values(data).returning();
+      if (!inserted) throw new Error("face_records insert returned no row");
+      // Eviction: deleta o que sobra além de 5 mais recentes
+      await tx.execute(sql`
+        DELETE FROM face_records
+        WHERE id IN (
+          SELECT id FROM face_records
+          WHERE person_id = ${data.person_id}
+          ORDER BY created_at DESC
+          OFFSET 5
+        )
+      `);
+      return inserted;
+    });
+  },
+
+  /**
+   * Move todos face_records de srcPersonId pra dstPersonId, depois FIFO
+   * eviction em dst se total > 5. Helper usado por personsRepo.mergeInto
+   * (Onda 7 §5.2 step 2 + step 3).
+   *
+   * Aceita um Drizzle transaction opcional (`tx`) pra rodar DENTRO de uma
+   * transação maior (caso típico: mergeInto). Quando `tx` ausente, usa o
+   * connection pool normal (getDb()) — útil pra ad-hoc fixups.
+   *
+   * Importante: quando rodando fora de transação, race condition é possível
+   * (entre UPDATE e DELETE outro insert pode mover o cap). Pra produção
+   * usar dentro do mergeInto.
+   */
+  async transferToPerson(
+    srcPersonId: string,
+    dstPersonId: string,
+    tx?: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0],
+  ): Promise<void> {
+    const db = tx ?? getDb();
+    await db.execute(sql`
+      UPDATE face_records SET person_id = ${dstPersonId}
+      WHERE person_id = ${srcPersonId}
+    `);
+    await db.execute(sql`
+      DELETE FROM face_records
+      WHERE id IN (
+        SELECT id FROM face_records
+        WHERE person_id = ${dstPersonId}
+        ORDER BY created_at DESC
+        OFFSET 5
+      )
+    `);
   },
 };

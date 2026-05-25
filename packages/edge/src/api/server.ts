@@ -24,6 +24,7 @@ import {
   detectionsRepo,
   matchAttemptsRepo,
   personsRepo,
+  reidMatchAttemptsRepo,
   sessionsRepo,
 } from "../persistence/repositories/index.js";
 import { erpCheckins, erpClients, erpEmployees } from "../persistence/schema/erp-cache.js";
@@ -32,11 +33,13 @@ import { recentDetections } from "./events.queries.js";
 import { listPendingEnriched } from "./match-pending.js";
 import { overviewMetrics } from "./metrics.queries.js";
 import { apiKeyMiddleware } from "./middleware/api-key.js";
+import { pingReid } from "./reid/health.js";
 import { createDashboardRoutes } from "./routes/dashboard.js";
 import { createDiscoveryRoutes } from "./routes/discovery.js";
 import { createErpRoutes } from "./routes/erp.js";
 import { createEventsRoutes } from "./routes/events.js";
 import { createImageProbeRoutes } from "./routes/image-probe.js";
+import { createMatchesReidRoutes } from "./routes/matches-reid.js";
 import { createMatchRoutes } from "./routes/matches.js";
 import { createMetricsRoutes } from "./routes/metrics.js";
 import { createPersonsRoutes } from "./routes/persons.js";
@@ -78,6 +81,11 @@ export function createServer() {
         };
       }
     }
+
+    // I4 + Onda 7: checks.reid sync (timeout 1s). REID_ENABLED=false →
+    // disabled flag e não degrada overall status.
+    const reidCheck = await pingReid(env.REID_BASE_URL, { disabled: !env.REID_ENABLED });
+    checks.reid = reidCheck;
 
     // I4 (review 2026-05-13): expõe estado de cada job do scheduler. Após
     // N failures consecutivas, o check fica ok=false e degrada o overall
@@ -195,6 +203,16 @@ export function createServer() {
     }),
   );
 
+  // Onda 7 §5.3 — Reid borderline review (aba paralela à temporal).
+  // Auth herdado de app.use("/api/matches/*", requireKey) acima (glob).
+  app.route(
+    "/api/matches/reid",
+    createMatchesReidRoutes({
+      findPending: (limit) => reidMatchAttemptsRepo.findPendingEnriched(limit),
+      resolve: (id, decision, userId) => reidMatchAttemptsRepo.resolve(id, decision, userId),
+    }),
+  );
+
   // Onda 3 — endpoints novos pro dashboard frontend
   app.route(
     "/api/persons",
@@ -237,14 +255,16 @@ export function createServer() {
   // no ingest seguem dormentes, sem consumer.
   app.route("/api/events", createEventsRoutes({ recent: (limit) => recentDetections(limit) }));
 
-  // Onda 3 Task 3.2.6: snapshots públicos (nginx restringe LAN).
-  // Filename já é validado pela rota (regex anti-traversal); path.join é seguro.
-  const SNAPSHOTS_DIR = process.env.SNAPSHOTS_DIR ?? "/var/lib/vipcam/snapshots";
+  // Onda 3 Task 3.2.6 → Onda 7 §2.3: snapshots públicos (nginx restringe LAN).
+  // Layout `YYYY-MM-DD/<detection-uuid>.jpg` (Onda 7 Task 8 saveCrop).
+  // Cada segmento validado por regex na route (anti-traversal); path.join é
+  // seguro pós-regex. Não usar path.resolve (normalizaria `..` se entrasse).
+  const SNAPSHOTS_DIR = env.SNAPSHOTS_DIR;
   app.route(
     "/snapshots",
     createSnapshotsRoutes({
-      readSnapshot: async (filename) => {
-        const fullPath = path.join(SNAPSHOTS_DIR, filename);
+      readSnapshot: async (relativePath) => {
+        const fullPath = path.join(SNAPSHOTS_DIR, relativePath);
         try {
           return await fs.readFile(fullPath);
         } catch (err) {

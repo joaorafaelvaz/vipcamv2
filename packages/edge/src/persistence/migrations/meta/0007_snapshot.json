@@ -1,0 +1,1520 @@
+{
+  "id": "7e5f4f30-9467-45a0-b4ca-7fff347d254f",
+  "prevId": "2ddecffa-a6c7-4f73-af7e-5d32dc2bb015",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.cameras": {
+      "name": "cameras",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ip_address": {
+          "name": "ip_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credentials_ref": {
+          "name": "credentials_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'CAMERA'"
+        },
+        "face_db_capacity": {
+          "name": "face_db_capacity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 10000
+        },
+        "face_db_used": {
+          "name": "face_db_used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "cameras_active_ip_uniq": {
+          "name": "cameras_active_ip_uniq",
+          "columns": [
+            {
+              "expression": "ip_address",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"cameras\".\"is_active\" = true",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.persons": {
+      "name": "persons",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "person_type": {
+          "name": "person_type",
+          "type": "person_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'anonymous'"
+        },
+        "erp_client_id": {
+          "name": "erp_client_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "erp_employee_id": {
+          "name": "erp_employee_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "first_seen_at": {
+          "name": "first_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "total_visits": {
+          "name": "total_visits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "avg_satisfaction": {
+          "name": "avg_satisfaction",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "estimated_age": {
+          "name": "estimated_age",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "estimated_gender": {
+          "name": "estimated_gender",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "thumbnail_path": {
+          "name": "thumbnail_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "persons_erp_client_idx": {
+          "name": "persons_erp_client_idx",
+          "columns": [
+            {
+              "expression": "erp_client_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "persons_erp_employee_idx": {
+          "name": "persons_erp_employee_idx",
+          "columns": [
+            {
+              "expression": "erp_employee_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "persons_last_seen_idx": {
+          "name": "persons_last_seen_idx",
+          "columns": [
+            {
+              "expression": "last_seen_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.face_records": {
+      "name": "face_records",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "person_id": {
+          "name": "person_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "camera_face_id": {
+          "name": "camera_face_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embedding": {
+          "name": "embedding",
+          "type": "vector(512)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "snapshot_path": {
+          "name": "snapshot_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "is_primary": {
+          "name": "is_primary",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "model_name": {
+          "name": "model_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'buffalo_s'"
+        },
+        "model_revision": {
+          "name": "model_revision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'insightface-0.7.3'"
+        },
+        "det_score": {
+          "name": "det_score",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "face_records_person_idx": {
+          "name": "face_records_person_idx",
+          "columns": [
+            {
+              "expression": "person_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "face_records_camera_face_idx": {
+          "name": "face_records_camera_face_idx",
+          "columns": [
+            {
+              "expression": "camera_face_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "face_records_embedding_hnsw_idx": {
+          "name": "face_records_embedding_hnsw_idx",
+          "columns": [
+            {
+              "expression": "embedding vector_cosine_ops",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "hnsw",
+          "with": {
+            "m": 16,
+            "ef_construction": 64
+          }
+        }
+      },
+      "foreignKeys": {
+        "face_records_person_id_persons_id_fk": {
+          "name": "face_records_person_id_persons_id_fk",
+          "tableFrom": "face_records",
+          "tableTo": "persons",
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.sessions": {
+      "name": "sessions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "person_id": {
+          "name": "person_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "camera_id": {
+          "name": "camera_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "current_track_id": {
+          "name": "current_track_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detection_count": {
+          "name": "detection_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "dominant_emotion": {
+          "name": "dominant_emotion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "avg_emotion_scores": {
+          "name": "avg_emotion_scores",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "linked_erp_checkin_id": {
+          "name": "linked_erp_checkin_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "sessions_person_idx": {
+          "name": "sessions_person_idx",
+          "columns": [
+            {
+              "expression": "person_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sessions_camera_idx": {
+          "name": "sessions_camera_idx",
+          "columns": [
+            {
+              "expression": "camera_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sessions_started_idx": {
+          "name": "sessions_started_idx",
+          "columns": [
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sessions_open_idx": {
+          "name": "sessions_open_idx",
+          "columns": [
+            {
+              "expression": "camera_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sessions_open_track_idx": {
+          "name": "sessions_open_track_idx",
+          "columns": [
+            {
+              "expression": "camera_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "current_track_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"sessions\".\"ended_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sessions_person_id_persons_id_fk": {
+          "name": "sessions_person_id_persons_id_fk",
+          "tableFrom": "sessions",
+          "tableTo": "persons",
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "sessions_camera_id_cameras_id_fk": {
+          "name": "sessions_camera_id_cameras_id_fk",
+          "tableFrom": "sessions",
+          "tableTo": "cameras",
+          "columnsFrom": ["camera_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.detections": {
+      "name": "detections",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "camera_id": {
+          "name": "camera_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "person_id": {
+          "name": "person_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "track_id": {
+          "name": "track_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bbox": {
+          "name": "bbox",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "face_attrs": {
+          "name": "face_attrs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "dominant_emotion": {
+          "name": "dominant_emotion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "emotion_confidence": {
+          "name": "emotion_confidence",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "snapshot_path": {
+          "name": "snapshot_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detected_at": {
+          "name": "detected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "raw_event": {
+          "name": "raw_event",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "detections_camera_idx": {
+          "name": "detections_camera_idx",
+          "columns": [
+            {
+              "expression": "camera_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "detections_person_idx": {
+          "name": "detections_person_idx",
+          "columns": [
+            {
+              "expression": "person_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "detections_session_idx": {
+          "name": "detections_session_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "detections_detected_idx": {
+          "name": "detections_detected_idx",
+          "columns": [
+            {
+              "expression": "detected_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "detections_anonymous_window_idx": {
+          "name": "detections_anonymous_window_idx",
+          "columns": [
+            {
+              "expression": "detected_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"detections\".\"person_id\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "detections_camera_id_cameras_id_fk": {
+          "name": "detections_camera_id_cameras_id_fk",
+          "tableFrom": "detections",
+          "tableTo": "cameras",
+          "columnsFrom": ["camera_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "detections_person_id_persons_id_fk": {
+          "name": "detections_person_id_persons_id_fk",
+          "tableFrom": "detections",
+          "tableTo": "persons",
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "detections_session_id_sessions_id_fk": {
+          "name": "detections_session_id_sessions_id_fk",
+          "tableFrom": "detections",
+          "tableTo": "sessions",
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.sentiment_records": {
+      "name": "sentiment_records",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "detection_id": {
+          "name": "detection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "person_id": {
+          "name": "person_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "emotion": {
+          "name": "emotion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confidence": {
+          "name": "confidence",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "sentiment_person_recorded_idx": {
+          "name": "sentiment_person_recorded_idx",
+          "columns": [
+            {
+              "expression": "person_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "recorded_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sentiment_session_idx": {
+          "name": "sentiment_session_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sentiment_records_detection_id_detections_id_fk": {
+          "name": "sentiment_records_detection_id_detections_id_fk",
+          "tableFrom": "sentiment_records",
+          "tableTo": "detections",
+          "columnsFrom": ["detection_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "sentiment_records_session_id_sessions_id_fk": {
+          "name": "sentiment_records_session_id_sessions_id_fk",
+          "tableFrom": "sentiment_records",
+          "tableTo": "sessions",
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "sentiment_records_person_id_persons_id_fk": {
+          "name": "sentiment_records_person_id_persons_id_fk",
+          "tableFrom": "sentiment_records",
+          "tableTo": "persons",
+          "columnsFrom": ["person_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.erp_checkins": {
+      "name": "erp_checkins",
+      "schema": "",
+      "columns": {
+        "erp_id": {
+          "name": "erp_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "erp_client_id": {
+          "name": "erp_client_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_type": {
+          "name": "event_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "processed_at": {
+          "name": "processed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        }
+      },
+      "indexes": {
+        "erp_checkins_client_idx": {
+          "name": "erp_checkins_client_idx",
+          "columns": [
+            {
+              "expression": "erp_client_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "erp_checkins_occurred_idx": {
+          "name": "erp_checkins_occurred_idx",
+          "columns": [
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "erp_checkins_unprocessed_idx": {
+          "name": "erp_checkins_unprocessed_idx",
+          "columns": [
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"erp_checkins\".\"processed_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.erp_clients": {
+      "name": "erp_clients",
+      "schema": "",
+      "columns": {
+        "erp_id": {
+          "name": "erp_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phone": {
+          "name": "phone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photo_path": {
+          "name": "photo_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "erp_updated_at": {
+          "name": "erp_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "synced_at": {
+          "name": "synced_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "erp_clients_name_idx": {
+          "name": "erp_clients_name_idx",
+          "columns": [
+            {
+              "expression": "name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.erp_employees": {
+      "name": "erp_employees",
+      "schema": "",
+      "columns": {
+        "erp_id": {
+          "name": "erp_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photo_path": {
+          "name": "photo_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photo_hash": {
+          "name": "photo_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "erp_updated_at": {
+          "name": "erp_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "synced_at": {
+          "name": "synced_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "erp_employees_name_idx": {
+          "name": "erp_employees_name_idx",
+          "columns": [
+            {
+              "expression": "name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.match_attempts": {
+      "name": "match_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "detection_id": {
+          "name": "detection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "erp_checkin_id": {
+          "name": "erp_checkin_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confidence_score": {
+          "name": "confidence_score",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decision": {
+          "name": "decision",
+          "type": "match_decision",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "decided_by": {
+          "name": "decided_by",
+          "type": "match_decided_by",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'system'"
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "match_attempts_decision_idx": {
+          "name": "match_attempts_decision_idx",
+          "columns": [
+            {
+              "expression": "decision",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "match_attempts_detection_idx": {
+          "name": "match_attempts_detection_idx",
+          "columns": [
+            {
+              "expression": "detection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "match_attempts_checkin_idx": {
+          "name": "match_attempts_checkin_idx",
+          "columns": [
+            {
+              "expression": "erp_checkin_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "match_attempts_pending_idx": {
+          "name": "match_attempts_pending_idx",
+          "columns": [
+            {
+              "expression": "decided_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"match_attempts\".\"decision\" = 'ambiguous'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "match_attempts_detection_id_detections_id_fk": {
+          "name": "match_attempts_detection_id_detections_id_fk",
+          "tableFrom": "match_attempts",
+          "tableTo": "detections",
+          "columnsFrom": ["detection_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "match_attempts_erp_checkin_id_erp_checkins_erp_id_fk": {
+          "name": "match_attempts_erp_checkin_id_erp_checkins_erp_id_fk",
+          "tableFrom": "match_attempts",
+          "tableTo": "erp_checkins",
+          "columnsFrom": ["erp_checkin_id"],
+          "columnsTo": ["erp_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.reid_match_attempts": {
+      "name": "reid_match_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "detection_id": {
+          "name": "detection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_face_record_id": {
+          "name": "candidate_face_record_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_person_id": {
+          "name": "candidate_person_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "distance": {
+          "name": "distance",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision": {
+          "name": "decision",
+          "type": "reid_decision",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ambiguous'"
+        },
+        "decided_by": {
+          "name": "decided_by",
+          "type": "reid_decided_by",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'system'"
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "reid_match_attempts_detection_idx": {
+          "name": "reid_match_attempts_detection_idx",
+          "columns": [
+            {
+              "expression": "detection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "reid_match_attempts_pending_idx": {
+          "name": "reid_match_attempts_pending_idx",
+          "columns": [
+            {
+              "expression": "decided_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"reid_match_attempts\".\"decision\" = 'ambiguous'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "reid_match_attempts_detection_id_detections_id_fk": {
+          "name": "reid_match_attempts_detection_id_detections_id_fk",
+          "tableFrom": "reid_match_attempts",
+          "tableTo": "detections",
+          "columnsFrom": ["detection_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "reid_match_attempts_candidate_face_record_id_face_records_id_fk": {
+          "name": "reid_match_attempts_candidate_face_record_id_face_records_id_fk",
+          "tableFrom": "reid_match_attempts",
+          "tableTo": "face_records",
+          "columnsFrom": ["candidate_face_record_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "reid_match_attempts_candidate_person_id_persons_id_fk": {
+          "name": "reid_match_attempts_candidate_person_id_persons_id_fk",
+          "tableFrom": "reid_match_attempts",
+          "tableTo": "persons",
+          "columnsFrom": ["candidate_person_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.person_merge_audit": {
+      "name": "person_merge_audit",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "src_id": {
+          "name": "src_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dst_id": {
+          "name": "dst_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "merged_at": {
+          "name": "merged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "merged_by": {
+          "name": "merged_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "src_snapshot": {
+          "name": "src_snapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.person_type": {
+      "name": "person_type",
+      "schema": "public",
+      "values": ["client", "employee", "anonymous"]
+    },
+    "public.match_decided_by": {
+      "name": "match_decided_by",
+      "schema": "public",
+      "values": ["system", "user"]
+    },
+    "public.match_decision": {
+      "name": "match_decision",
+      "schema": "public",
+      "values": ["auto_matched", "ambiguous", "rejected"]
+    },
+    "public.reid_decided_by": {
+      "name": "reid_decided_by",
+      "schema": "public",
+      "values": ["system", "user"]
+    },
+    "public.reid_decision": {
+      "name": "reid_decision",
+      "schema": "public",
+      "values": ["ambiguous", "matched_to_candidate", "rejected_new_person"]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

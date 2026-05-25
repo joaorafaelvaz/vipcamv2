@@ -36,6 +36,27 @@
       "when": 1778595231075,
       "tag": "0004_organic_enchantress",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1779660149912,
+      "tag": "0005_fine_wolverine",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1779660608740,
+      "tag": "0006_early_alex_wilder",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1779660919236,
+      "tag": "0007_overjoyed_jackal",
+      "breakpoints": true
     }
   ]
 }

@@ -3,15 +3,21 @@
 /detect resolve o gate do Failover B: dado uma imagem, retorna faces
 detectadas (bbox px na imagem nativa + det_score) e infer_ms. /health mantido.
 """
+import base64
 import io
 import time
 
 import numpy as np
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from PIL import Image
 from pydantic import BaseModel
 
-app = FastAPI(title="vipcam-reid", version="0.1.0")
+app = FastAPI(title="vipcam-reid", version="0.2.0")
+
+# Onda 7: trocar quando atualizar pip insightface — pra invalidar embeddings
+# antigos via WHERE clause no edge sem precisar re-migrar tabela.
+MODEL_NAME = "buffalo_s"
+MODEL_REVISION = "insightface-0.7.3"
 
 # INSIGHTFACE_HOME deve apontar p/ um path em ReadWritePaths do systemd unit
 # (default ~/.insightface é bloqueado por ProtectHome=read-only).
@@ -31,6 +37,8 @@ def _model():
 class HealthResponse(BaseModel):
     status: str
     version: str
+    model_name: str
+    model_revision: str
 
 
 class Face(BaseModel):
@@ -45,9 +53,83 @@ class DetectResponse(BaseModel):
     infer_ms: int
 
 
+class WarmupResponse(BaseModel):
+    warmed: bool
+    took_ms: int
+
+
+class EmbedResponse(BaseModel):
+    embedding: list[float]
+    det_score: float
+    infer_ms: int
+    model_name: str
+    model_revision: str
+    crop_jpeg_b64: str
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    return HealthResponse(status="healthy", version="0.1.0")
+    return HealthResponse(
+        status="healthy",
+        version=app.version,
+        model_name=MODEL_NAME,
+        model_revision=MODEL_REVISION,
+    )
+
+
+@app.post("/warmup", response_model=WarmupResponse)
+async def warmup() -> WarmupResponse:
+    """Força carga do modelo InsightFace (idempotente)."""
+    t0 = time.monotonic()
+    _ = _model()
+    took_ms = int((time.monotonic() - t0) * 1000)
+    return WarmupResponse(warmed=True, took_ms=took_ms)
+
+
+@app.post("/embed", response_model=EmbedResponse)
+async def embed(
+    file: UploadFile = File(...),
+    x: int = Form(...),
+    y: int = Form(...),
+    w: int = Form(...),
+    h: int = Form(...),
+) -> EmbedResponse:
+    """Crop pela bbox + extrai embedding 512-d."""
+    if x < 0 or y < 0 or w <= 0 or h <= 0:
+        raise HTTPException(status_code=400, detail="bbox: x/y must be >= 0, w/h must be > 0")
+    raw = await file.read()
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"undecodable image: {exc}") from exc
+    fw, fh = img.size
+    if x + w > fw or y + h > fh:
+        raise HTTPException(
+            status_code=400,
+            detail=f"bbox ({x},{y},{w},{h}) fora do frame ({fw}x{fh})",
+        )
+    crop = img.crop((x, y, x + w, y + h))
+    arr = np.ascontiguousarray(np.asarray(crop)[:, :, ::-1])
+    t0 = time.monotonic()
+    faces = _model().get(arr)
+    infer_ms = int((time.monotonic() - t0) * 1000)
+    if not faces:
+        raise HTTPException(
+            status_code=422,
+            detail="no face detected in crop — bbox may be misaligned or face too small",
+        )
+    best = max(faces, key=lambda f: f.det_score)
+    crop_buf = io.BytesIO()
+    crop.save(crop_buf, format="JPEG", quality=85)
+    crop_b64 = base64.b64encode(crop_buf.getvalue()).decode("ascii")
+    return EmbedResponse(
+        embedding=[float(v) for v in best.normed_embedding.tolist()],
+        det_score=float(best.det_score),
+        infer_ms=infer_ms,
+        model_name=MODEL_NAME,
+        model_revision=MODEL_REVISION,
+        crop_jpeg_b64=crop_b64,
+    )
 
 
 @app.post("/detect", response_model=DetectResponse)
