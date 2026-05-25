@@ -23,7 +23,11 @@ EnvironmentFile=-/etc/vipcam/reid.env
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/var/lib/vipcam
 Environment=INSIGHTFACE_HOME=/var/lib/vipcam/.insightface
-ExecStart=/usr/local/bin/uv run uvicorn src.main:app --host 127.0.0.1 --port 5005
+# --frozen: usa uv.lock existente sem tentar atualizar. ProtectSystem=strict
+# torna /opt read-only, então sem --frozen o uv tenta escrever uv.lock e
+# entra em crash loop (descoberto em 2026-05-25, restart counter 80k+).
+# Lock deve ser regenerado localmente + commitado quando pyproject.toml mudar.
+ExecStart=/usr/local/bin/uv run --frozen uvicorn src.main:app --host 127.0.0.1 --port 5005
 # Onda 7 §3.3: pre-warm via /warmup (endpoint dedicado idempotente).
 # Sem isso, primeira /embed em runtime sofre ~5,5s de cold-start. Usamos
 # --fail aqui — se /warmup retornar 500 (modelo falha em carregar), o
