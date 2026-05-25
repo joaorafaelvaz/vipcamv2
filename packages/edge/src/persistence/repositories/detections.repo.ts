@@ -3,7 +3,14 @@ import { getDb } from "../db.js";
 import { type Detection, type NewDetection, detections } from "../schema/detections.js";
 
 export const detectionsRepo = {
-  async create(data: Omit<NewDetection, "id">): Promise<Detection> {
+  /**
+   * `id` é opcional: quando ausente, Postgres preenche via defaultRandom().
+   * Onda 7 — pipeline pré-gera o uuid pra passar ao reid orchestrator
+   * (que loga detectionId em metrics) ANTES do insert. Pre-gen é seguro
+   * porque uuid v4 colisão é desprezível e o INSERT abaixo respeita
+   * NewDetection.id?.
+   */
+  async create(data: NewDetection): Promise<Detection> {
     const [d] = await getDb().insert(detections).values(data).returning();
     if (!d) throw new Error("insert returned no row");
     return d;

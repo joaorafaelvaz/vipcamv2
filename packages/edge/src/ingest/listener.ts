@@ -89,7 +89,16 @@ async function runOnce(
     ...(isProbeActive() ? { probeTap: captureTap } : {}),
     // Fire-and-forget — pipeline não pode bloquear leitura do socket
     onEvent: (captured) => {
-      void processEvent(captured, camera.id);
+      // Closure que captura frame inteiro via snapshot.cgi — injetada no
+      // pipeline pra reid orchestrator (Onda 7 §2.1). Lazy: só executa
+      // quando o pipeline decide rodar reid (evita snapshot pra eventos
+      // não-Face / face.stop / sem bbox).
+      const captureSnapshot = () =>
+        client
+          .get("/cgi-bin/snapshot.cgi?channel=1")
+          .then((r) => r.arrayBuffer())
+          .then((b) => Buffer.from(b));
+      void processEvent(captured, camera.id, { captureSnapshot });
       if (isProbeActive() && captured.parsed) {
         const parsed = captured.parsed;
         void sampler({
