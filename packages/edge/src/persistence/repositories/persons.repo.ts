@@ -4,6 +4,7 @@ import { getDb } from "../db.js";
 import { erpClients } from "../schema/erp-cache.js";
 import { type NewPerson, type Person, persons } from "../schema/persons.js";
 import { sessions } from "../schema/sessions.js";
+import { faceRecordsRepo } from "./face-records.repo.js";
 
 export const personsRepo = {
   async create(data: Omit<NewPerson, "id">): Promise<Person> {
@@ -171,5 +172,71 @@ export const personsRepo = {
       avg_dominant_emotion: row.avg_dominant_emotion,
       avg_visit_duration_min: row.avg_visit_duration_min,
     };
+  },
+
+  /**
+   * Hard merge transacional (Onda 7 §5.2): src some, todas as refs migram pra
+   * dst, persons.dst absorve rollup de visitas, audit row inserida.
+   *
+   * Lock determinístico em ordem ascendente (LEAST primeiro) pra prevenir
+   * deadlock entre dois operadores resolvendo merges sobrepostos.
+   *
+   * Subqueries posteriores ao FOR UPDATE são seguras porque srcId permanece
+   * locked até COMMIT.
+   */
+  async mergeInto(srcId: string, dstId: string, userId: string): Promise<void> {
+    if (srcId === dstId) {
+      throw new Error("mergeInto: srcId and dstId are the same person");
+    }
+    const [leastId, greatestId] = srcId < dstId ? [srcId, dstId] : [dstId, srcId];
+    await getDb().transaction(async (tx) => {
+      // 1. Lock determinístico (dois statements separados — single ORDER BY IN(...) FOR UPDATE
+      // não-garante ordem de lock acquisition no Postgres).
+      const lockedLeast = await tx.execute<{ id: string }>(
+        sql`SELECT id FROM persons WHERE id = ${leastId} FOR UPDATE`,
+      );
+      const lockedGreatest = await tx.execute<{ id: string }>(
+        sql`SELECT id FROM persons WHERE id = ${greatestId} FOR UPDATE`,
+      );
+      if (lockedLeast.length === 0 || lockedGreatest.length === 0) {
+        throw new Error(`mergeInto: person not found (${srcId} or ${dstId})`);
+      }
+
+      // 2. Migra refs simples (detections, sessions)
+      await tx.execute(sql`UPDATE detections SET person_id = ${dstId} WHERE person_id = ${srcId}`);
+      await tx.execute(sql`UPDATE sessions   SET person_id = ${dstId} WHERE person_id = ${srcId}`);
+
+      // 3. face_records: reusa helper tx-aware (Task 11) — UPDATE + FIFO eviction
+      // em dst após import (Top-K=5). DRY com insertAndEvict; mesma semântica.
+      await faceRecordsRepo.transferToPerson(srcId, dstId, tx);
+
+      // 4. Rollup das estatísticas — regras invariantes Onda 7 §5.2:
+      //    - last_seen_at  = GREATEST(recência)
+      //    - first_seen_at = LEAST (antiguidade)
+      //    - total_visits  = soma
+      //    - colunas nullable PRECISAM usar COALESCE (none aqui — todas NOT NULL).
+      await tx.execute(sql`
+        UPDATE persons
+        SET total_visits  = persons.total_visits + (SELECT total_visits FROM persons WHERE id = ${srcId}),
+            first_seen_at = LEAST(persons.first_seen_at,    (SELECT first_seen_at FROM persons WHERE id = ${srcId})),
+            last_seen_at  = GREATEST(persons.last_seen_at,  (SELECT last_seen_at FROM persons WHERE id = ${srcId})),
+            updated_at    = now()
+        WHERE id = ${dstId}
+      `);
+
+      // 5. Audit ANTES do delete (snapshot completo de src)
+      await tx.execute(sql`
+        INSERT INTO person_merge_audit (src_id, dst_id, merged_at, merged_by, src_snapshot)
+        VALUES (
+          ${srcId}, ${dstId}, now(), ${userId},
+          (SELECT row_to_json(persons.*) FROM persons WHERE id = ${srcId})
+        )
+      `);
+
+      // 6. DELETE src. CASCADE em reid_match_attempts.candidate_person_id remove
+      //    quaisquer rows pendentes apontando pra src (intencional — referência
+      //    perdeu semântica).
+      await tx.execute(sql`DELETE FROM persons WHERE id = ${srcId}`);
+    });
   },
 };
