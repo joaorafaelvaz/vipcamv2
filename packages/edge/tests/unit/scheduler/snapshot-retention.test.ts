@@ -16,7 +16,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
-const captured: Array<{ cronExpr: string; cb: () => Promise<void> | void; tz?: string }> = [];
+const captured: Array<{
+  cronExpr: string;
+  cb: () => Promise<void> | void;
+  tz: string | undefined;
+}> = [];
 
 const installMocks = () => {
   mock.module("node-cron", () => ({
