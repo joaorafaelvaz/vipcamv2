@@ -50,13 +50,26 @@ const envSchema = z
     // Onda 5: timezone p/ buckets de dia/hora das métricas. Timestamps são
     // timestamptz (UTC); a barbearia é local — sem isso pico/fluxo deslocam ~3h.
     METRICS_TZ: z.string().min(1).default("America/Sao_Paulo"),
+    // Onda 7 — Failover B
+    REID_ENABLED: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((v) => v === "true"),
+    REID_BASE_URL: z.string().url().default("http://127.0.0.1:5005"),
+    // Thresholds via ENV pra calibração empírica sem rebuild — ver spec §4.3.
+    REID_DIST_STRICT: z.coerce.number().min(0).max(2).default(0.35),
+    REID_DIST_LOOSE: z.coerce.number().min(0).max(2).default(0.55),
+    SNAPSHOTS_DIR: z.string().min(1).default("/var/lib/vipcam/snapshots"),
   })
   .refine(
     (v) =>
       (v.CAMERA_IP && v.CAMERA_USER && v.CAMERA_PASS) ||
       (!v.CAMERA_IP && !v.CAMERA_USER && !v.CAMERA_PASS),
     { message: "CAMERA_IP/USER/PASS must be all set or all unset" },
-  );
+  )
+  .refine((v) => v.REID_DIST_STRICT < v.REID_DIST_LOOSE, {
+    message: "REID_DIST_STRICT must be < REID_DIST_LOOSE (strict < borderline boundary)",
+  });
 
 export type Env = z.infer<typeof envSchema>;
 
