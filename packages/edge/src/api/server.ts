@@ -24,6 +24,7 @@ import {
   detectionsRepo,
   matchAttemptsRepo,
   personsRepo,
+  reidMatchAttemptsRepo,
   sessionsRepo,
 } from "../persistence/repositories/index.js";
 import { erpCheckins, erpClients, erpEmployees } from "../persistence/schema/erp-cache.js";
@@ -39,6 +40,7 @@ import { createErpRoutes } from "./routes/erp.js";
 import { createEventsRoutes } from "./routes/events.js";
 import { createImageProbeRoutes } from "./routes/image-probe.js";
 import { createMatchRoutes } from "./routes/matches.js";
+import { createMatchesReidRoutes } from "./routes/matches-reid.js";
 import { createMetricsRoutes } from "./routes/metrics.js";
 import { createPersonsRoutes } from "./routes/persons.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
@@ -198,6 +200,16 @@ export function createServer() {
       listPending: (limit) => listPendingEnriched(limit),
       resolve: resolveAmbiguous,
       reject: (id, reason) => matchAttemptsRepo.rejectAmbiguous(id, reason).then(() => undefined),
+    }),
+  );
+
+  // Onda 7 §5.3 — Reid borderline review (aba paralela à temporal).
+  // Auth herdado de app.use("/api/matches/*", requireKey) acima (glob).
+  app.route(
+    "/api/matches/reid",
+    createMatchesReidRoutes({
+      findPending: (limit) => reidMatchAttemptsRepo.findPendingEnriched(limit),
+      resolve: (id, decision, userId) => reidMatchAttemptsRepo.resolve(id, decision, userId),
     }),
   );
 
