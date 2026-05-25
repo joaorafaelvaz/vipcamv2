@@ -473,4 +473,75 @@ A Onda 7 entra em produção com `REID_DIST_STRICT=0.35` e `REID_DIST_LOOSE=0.55
 - `reid_match_attempts` ambiguous são revisáveis e resolvíveis pela UI `/matches`.
 - `checks.reid` no `/api/health` reflete estado real do sidecar.
 - Retention 30d roda e aparece em `checks.scheduler_snapshots`.
+
+---
+
+## 10. Onda 7.1 — hotfixes pós-deploy (2026-05-25)
+
+Cinco bugs descobertos só na primeira hora de produção real. Todos resolvidos no mesmo dia via hotfix commits diretos em master.
+
+### 10.1 Sidecar uv.lock readonly (commit `0857b29`)
+
+**Sintoma:** `vipcam-reid` em crash loop infinito (restart counter ~80303, desde 24/05). `/api/health` reportando `checks.reid.ok=false` ("Unable to connect"). Pre-existente desde Onda 6, passou despercebido porque `/api/health` pré-Onda-7 não tinha `checks.reid` — sidecar down não degradava overall.
+
+**Causa raiz:** systemd unit usa `ExecStart=/usr/local/bin/uv run uvicorn ...` sem `--frozen`. `uv run` tenta atualizar `uv.lock` a cada start (warning "tool.uv.dev-dependencies deprecated"). Mas o unit tem `ProtectSystem=strict` que torna `/opt` read-only → uv falha → exit 2 → systemd restart → loop.
+
+**Fix:** adicionar `--frozen` ao `ExecStart`. Aplicado no VPS via `sed` em `/etc/systemd/system/vipcam-reid.service` + persistido em `infra/systemd/vipcam-reid.service.example` pra próximo `install.sh` não perder. Convenção documentada: `uv.lock` deve ser regenerado localmente + commitado quando `pyproject.toml` mudar.
+
+### 10.2 Reid 422/400 em 100% das detections (commit `08c00b0`)
+
+**Sintoma:** todas as 200+ detections processadas nas primeiras horas pós-deploy ficaram com `reid_status='unavailable'`. Edge logs mostravam mix de HTTP 422 ("no face detected in crop") e HTTP 400 ("bbox fora do frame") do sidecar.
+
+**Causa raiz:** bbox do evento Dahua aponta pra onde o rosto **estava** no momento do evento, mas `snapshot.cgi` captura ~700ms depois (já documentado no Onda 6 probe report). Crop pela bbox velha pega lugar onde não tem mais rosto. Investigação manual confirmou: `/embed` com bbox grande genérica (1000,400,600,700) → 200 OK + embedding. `/embed` com bbox real do evento (1280,1015,81,89) → 422.
+
+**Fix:** sidecar `/embed` agora faz **fallback automático** — tenta crop pela bbox primeiro (rápido ~30ms); se InsightFace não detectar OU bbox cair fora do frame, roda no frame inteiro (~150ms) e escolhe rosto de maior `det_score`. Retorna `source: "bbox" | "frame_fallback"` no response pra observability. Crop persistido em disco: bbox exata se `source=bbox`, OU bbox do InsightFace + 10% margin se `source=frame_fallback`.
+
+Edge grava `face_attrs.reid_source` no DB pra análise empírica. Sidecar bumpado pra 0.2.1.
+
+Hit-rate empírica observada após o fix: **~83%** (5/6 detections numa janela de 5min). Os 17% remanescentes são casos onde nem o frame inteiro tem rosto detectável (pessoa virada, blur, oclusão) — graceful degrade legítimo per §3.5.
+
+### 10.3 snapshotUrl drop date prefix (commit `06c2e3e`)
+
+**Sintoma:** `/live` cards mostravam placeholder cinza. Console DevTools cheio de `GET /snapshots/<uuid>.jpg → 404` (sem prefixo de data).
+
+**Causa raiz:** `snapshotUrl()` em `packages/web/src/lib/api-client.ts` fazia `snapshotPath.split("/").pop()` — pegava só o filename, descartava o prefixo `2026-05-25/`. Era OK na rota flat `/snapshots/:filename` pré-Onda-7. §2.3 mudou rota pra `/snapshots/:date/:filename` com regex anti-traversal por segmento — URL ficou inválida.
+
+**Fix:** drop o `split().pop()`, passar `snapshot_path` direto. URL final fica `${API}/snapshots/2026-05-25/<uuid>.jpg`.
+
+### 10.4 Nginx sem `location /snapshots/` (commit `7981e41`)
+
+**Sintoma:** mesmo após fix 10.3, requests `/snapshots/...` continuavam 404 via nginx. Mas `curl http://127.0.0.1:4001/snapshots/...` direto na porta interna do edge retornava **200 + JPEG** corretamente.
+
+**Causa raiz:** vhost `/etc/nginx/sites-enabled/monitoramento.franquiabv.com.br.conf` tinha blocos pra `/api/`, `/api/discovery/`, `/api/events/stream`, `/`, `/_next/static/`, mas **nenhum** pra `/snapshots/`. Requests caíam no `location /` genérico → Next.js (port 3035) → 404. Edge nunca era chamado.
+
+**Fix:** adicionado bloco `location /snapshots/` proxiando ao edge 4001 (headers padrão, sem WebSocket porque é só GET curto cacheado). Aplicado no VPS via `nano` + persistido em `infra/nginx/monitoramento.franquiabv.com.br.conf`. Esse arquivo é template do install.sh — preserva o fix em futuras setups.
+
+### 10.5 Lint baseline drift (commit `1fda5ee`, já em master pré-deploy)
+
+21 errors mecânicos (formatter + import-sort + 1 useConst) introduzidos nos arquivos novos da Onda 7. Auto-fix via `bun x biome check --write`. Não bloqueia merge.
+
+---
+
+## 11. Lições aprendidas (input pra Ondas futuras)
+
+- **Smoke tests pós-deploy precisam exercitar o caminho fim-a-fim**, não só os endpoints. Os 4 hotfixes da §10 todos passavam offline gates mas só apareceram quando a primeira detection real chegou e o request HTTP genuíno foi feito pelo browser.
+- **Pre-existing infra debt vira blocker quando novo health-check exposes** (10.1). Adicionar nova métrica em `/api/health` deve sempre ser acompanhado de "vai isso passar imediatamente em produção?".
+- **Crop por bbox de evento Dahua tem hit-rate baixo isoladamente** — fallback frame-inteiro deveria ter sido o design original do spec, não a otimização premium. Onda 6 probe report já tinha o dado (`face_rate=0.62` com frame inteiro) mas a spec da Onda 7 §3.1 viu o crop-bbox como "preciso e rápido" sem prever o timing skew. **Próximas specs de pipeline com câmera devem assumir alignment skew como default e desenhar fallback explicitamente.**
+- **install.sh + .example precisam ser tratados como fonte da verdade**. Edits manuais no VPS vão ser perdidos quando o install.sh roda — sempre commitar a forma final pro repo (10.1 ExecStartPost, 10.4 nginx location).
+
+---
+
+## 12. Onda 7.1 — débitos remanescentes (não-críticos)
+
+Lista priorizada do que ficou em aberto, candidatos a próximas ondas:
+
+| # | Item | Origem | Prioridade | Notas |
+|---|---|---|---|---|
+| 1 | §5.1 rows 3-5 — conflito reid+ERP divergente | spec §5.1 deferral | média | UI workflow novo no /matches Temporal pra "esta detection já tem person W, ERP sugere Y" |
+| 2 | NextAuth real (substituir userId="system") | spec §5.2 | baixa | mergeInto audit hoje grava "system" hardcoded; precisa auth real |
+| 3 | Backfill /embed retroativo em detections "unavailable" antigas | descoberto na §10 | média | 195 rows com snapshot_path=null mas eventos válidos — recriar snapshots via /embed se câmera ainda alcançável |
+| 4 | `pruneOlderThan` per-entry try/catch | code-reviewer final | baixa | hoje 1 dir corrupto aborta job inteiro; per-entry isolaria |
+| 5 | Probe boot-time `CAMERA_FRAME_WIDTH/HEIGHT` vs snapshot.cgi real | code-reviewer final | baixa | fail-fast se câmera retorna dimensão diferente do env (raro mas degrada silenciosamente) |
+| 6 | README em `packages/edge/src/persistence/migrations/` doc hand-edit convention | code-reviewer final | baixa | impedir futuro contributor de re-rodar db:generate sem ler comentário do `0005_*.sql` |
+| 7 | `det_score` filter em decideMatch (skip face_records com det_score < 0.6) | spec §4.1 (campo já gravado, query não filtra) | baixa | reduz falsos positivos quando crop original era ruim |
 - Documento `docs/superpowers/specs/2026-05-20-onda-7-failover-b-report.md` registra: thresholds finais após calibração, taxa de strict match observada, taxa de borderline review por dia.
