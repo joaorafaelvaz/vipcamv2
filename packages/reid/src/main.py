@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from PIL import Image
 from pydantic import BaseModel
 
-app = FastAPI(title="vipcam-reid", version="0.2.0")
+app = FastAPI(title="vipcam-reid", version="0.2.1")
 
 # Onda 7: trocar quando atualizar pip insightface — pra invalidar embeddings
 # antigos via WHERE clause no edge sem precisar re-migrar tabela.
@@ -65,6 +65,10 @@ class EmbedResponse(BaseModel):
     model_name: str
     model_revision: str
     crop_jpeg_b64: str
+    # Onda 7.1: indica se o embedding veio do crop pela bbox do evento
+    # ("bbox") ou do fallback frame-inteiro ("frame_fallback"). Edge usa pra
+    # observability/metrics; embedding é igualmente válido nos dois casos.
+    source: str = "bbox"
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -86,6 +90,26 @@ async def warmup() -> WarmupResponse:
     return WarmupResponse(warmed=True, took_ms=took_ms)
 
 
+def _embed_pil(crop_img: "Image.Image") -> "tuple[list[float], float, int] | None":
+    """Roda InsightFace numa imagem PIL. Retorna (embedding, det_score, infer_ms)
+    do rosto de maior det_score, ou None se nenhum rosto detectado."""
+    arr = np.ascontiguousarray(np.asarray(crop_img)[:, :, ::-1])
+    t0 = time.monotonic()
+    faces = _model().get(arr)
+    infer_ms = int((time.monotonic() - t0) * 1000)
+    if not faces:
+        return None
+    best = max(faces, key=lambda f: f.det_score)
+    return ([float(v) for v in best.normed_embedding.tolist()],
+            float(best.det_score), infer_ms)
+
+
+def _jpeg_b64(img: "Image.Image", *, quality: int = 85) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(
     file: UploadFile = File(...),
@@ -94,7 +118,10 @@ async def embed(
     w: int = Form(...),
     h: int = Form(...),
 ) -> EmbedResponse:
-    """Crop pela bbox + extrai embedding 512-d."""
+    """Onda 7.1: tenta bbox primeiro; se InsightFace falha (rosto se moveu
+    entre evento Dahua e snapshot.cgi ~700ms depois), faz fallback pra frame
+    inteiro escolhendo o maior rosto. Edge recebe source='bbox' ou
+    'frame_fallback' pra observability."""
     if x < 0 or y < 0 or w <= 0 or h <= 0:
         raise HTTPException(status_code=400, detail="bbox: x/y must be >= 0, w/h must be > 0")
     raw = await file.read()
@@ -103,32 +130,55 @@ async def embed(
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"undecodable image: {exc}") from exc
     fw, fh = img.size
-    if x + w > fw or y + h > fh:
-        raise HTTPException(
-            status_code=400,
-            detail=f"bbox ({x},{y},{w},{h}) fora do frame ({fw}x{fh})",
-        )
-    crop = img.crop((x, y, x + w, y + h))
-    arr = np.ascontiguousarray(np.asarray(crop)[:, :, ::-1])
-    t0 = time.monotonic()
-    faces = _model().get(arr)
-    infer_ms = int((time.monotonic() - t0) * 1000)
-    if not faces:
+
+    # Tentativa 1: crop pela bbox do evento (rápido, ~30ms). Se bbox cabe no
+    # frame, pode ter o rosto. Se não cabe, pulamos direto pro fallback (em vez
+    # de 400 — quando bbox vem inválida por timing/race, fallback recupera).
+    if x + w <= fw and y + h <= fh:
+        crop = img.crop((x, y, x + w, y + h))
+        res = _embed_pil(crop)
+        if res is not None:
+            emb, det_score, infer_ms = res
+            return EmbedResponse(
+                embedding=emb,
+                det_score=det_score,
+                infer_ms=infer_ms,
+                model_name=MODEL_NAME,
+                model_revision=MODEL_REVISION,
+                crop_jpeg_b64=_jpeg_b64(crop),
+                source="bbox",
+            )
+
+    # Tentativa 2: frame inteiro (mais lento, ~150ms no DH-IPC-HFW5442T-ASE
+    # @2688x1520). Se nenhum rosto for detectado nem aqui, 422.
+    res = _embed_pil(img)
+    if res is None:
         raise HTTPException(
             status_code=422,
-            detail="no face detected in crop — bbox may be misaligned or face too small",
+            detail="no face detected in bbox crop nor full frame",
         )
+    emb, det_score, infer_ms = res
+    # Crop final pro edge persistir: usa bbox do InsightFace (rosto real) com
+    # margem de 10% pra dar contexto pro /live. Re-extrai o rosto de maior
+    # det_score (reusa _embed_pil já encontrou, mas precisamos da bbox).
+    faces = _model().get(np.ascontiguousarray(np.asarray(img)[:, :, ::-1]))
     best = max(faces, key=lambda f: f.det_score)
-    crop_buf = io.BytesIO()
-    crop.save(crop_buf, format="JPEG", quality=85)
-    crop_b64 = base64.b64encode(crop_buf.getvalue()).decode("ascii")
+    x1, y1, x2, y2 = (float(v) for v in best.bbox)
+    margin_x = (x2 - x1) * 0.10
+    margin_y = (y2 - y1) * 0.10
+    cx1 = max(0, int(x1 - margin_x))
+    cy1 = max(0, int(y1 - margin_y))
+    cx2 = min(fw, int(x2 + margin_x))
+    cy2 = min(fh, int(y2 + margin_y))
+    face_crop = img.crop((cx1, cy1, cx2, cy2))
     return EmbedResponse(
-        embedding=[float(v) for v in best.normed_embedding.tolist()],
-        det_score=float(best.det_score),
+        embedding=emb,
+        det_score=det_score,
         infer_ms=infer_ms,
         model_name=MODEL_NAME,
         model_revision=MODEL_REVISION,
-        crop_jpeg_b64=crop_b64,
+        crop_jpeg_b64=_jpeg_b64(face_crop),
+        source="frame_fallback",
     )
 
 

@@ -10,6 +10,10 @@ export interface EmbedResult {
   /** Crop reencoded JPEG q=85, base64-encoded. Edge decodifica e escreve em
    * disco via saveCrop (Onda 7 §2.1 — crop, não frame inteiro). */
   crop_jpeg_b64: string;
+  /** Onda 7.1: indica se embedding veio do crop pela bbox do evento ("bbox")
+   * ou do fallback frame-inteiro ("frame_fallback"). Default "bbox" pra
+   * backward-compat com sidecar 0.2.0. */
+  source?: "bbox" | "frame_fallback";
 }
 
 /**

@@ -139,6 +139,8 @@ export async function processEvent(
       parsedAttrs.reid_status = reidOut.status;
       if (reidOut.reidDistance !== undefined) parsedAttrs.reid_distance = reidOut.reidDistance;
       if (reidOut.reidError) parsedAttrs.reid_error = reidOut.reidError;
+      // Onda 7.1: rastreia se reid veio do crop bbox ou fallback frame inteiro.
+      if (reidOut.embedding?.source) parsedAttrs.reid_source = reidOut.embedding.source;
     }
 
     const detection: Parameters<typeof detectionsRepo.create>[0] = {
