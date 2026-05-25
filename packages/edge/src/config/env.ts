@@ -60,6 +60,12 @@ const envSchema = z
     REID_DIST_STRICT: z.coerce.number().min(0).max(2).default(0.35),
     REID_DIST_LOOSE: z.coerce.number().min(0).max(2).default(0.55),
     SNAPSHOTS_DIR: z.string().min(1).default("/var/lib/vipcam/snapshots"),
+    // Onda 7: dimensões do frame que vem do snapshot.cgi. Necessário pra
+    // denormalizar event.bbox (que é 0..1) pra pixels inteiros antes do
+    // sidecar /embed (FastAPI Form(int) rejeita "0.234"). Default 2688x1520
+    // conforme probe report Onda 6 — DH-IPC-HFW5442T-ASE @ channel=1.
+    CAMERA_FRAME_WIDTH: z.coerce.number().int().positive().default(2688),
+    CAMERA_FRAME_HEIGHT: z.coerce.number().int().positive().default(1520),
   })
   .refine(
     (v) =>

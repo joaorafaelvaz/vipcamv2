@@ -207,4 +207,43 @@ describe("processEvent — reid integration", () => {
     expect((insertedDetection?.face_attrs as Record<string, unknown>).reid_status).toBe("disabled");
     expect(createdFaceRecord).toBeNull();
   });
+
+  test("event.bbox normalized 0..1 é denormalizado a pixel ints antes do orchestrator", async () => {
+    let bboxPassed: { x: number; y: number; w: number; h: number } | null = null;
+    // Frame default 2688x1520. event.bbox vem normalizado 0..1.
+    // Raw fixed-point [x1,y1,x2,y2] = [1638, 1638, 4915, 4915] over scale 8192
+    //   → normalized bbox {x: 0.1999, y: 0.1999, w: 0.40, h: 0.40}
+    //   → pixel ints {x: 537, y: 303, w: 1075, h: 608}
+    //   → x+w = 1612 ≤ 2688; y+h = 911 ≤ 1520 (dentro do frame).
+    const rawWithBbox = {
+      received_at: "2026-05-20T14:30:00Z",
+      index: 1,
+      parsed: {
+        code: "FaceDetection",
+        action: "Start" as const,
+        data: {
+          RealUTC: REAL_UTC,
+          Object: { ObjectID: 99, BoundingBox: [1638, 1638, 4915, 4915] },
+        },
+      },
+    };
+    await processEvent(rawWithBbox as Parameters<typeof processEvent>[0], "cam-1", {
+      captureSnapshot: captureSnapshotStub,
+      resolveReid: async (input) => {
+        bboxPassed = input.bbox;
+        return { personId: null, status: "disabled" };
+      },
+    });
+    expect(bboxPassed).not.toBeNull();
+    // Todos devem ser inteiros (sidecar /embed espera Form(int))
+    expect(Number.isInteger(bboxPassed!.x)).toBe(true);
+    expect(Number.isInteger(bboxPassed!.y)).toBe(true);
+    expect(Number.isInteger(bboxPassed!.w)).toBe(true);
+    expect(Number.isInteger(bboxPassed!.h)).toBe(true);
+    // Sanity bounds: dentro do frame 2688x1520
+    expect(bboxPassed!.x).toBeGreaterThanOrEqual(0);
+    expect(bboxPassed!.y).toBeGreaterThanOrEqual(0);
+    expect(bboxPassed!.x + bboxPassed!.w).toBeLessThanOrEqual(2688);
+    expect(bboxPassed!.y + bboxPassed!.h).toBeLessThanOrEqual(1520);
+  });
 });

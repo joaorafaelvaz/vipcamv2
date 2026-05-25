@@ -75,12 +75,23 @@ export async function processEvent(
       try {
         const frameBytes = await deps.captureSnapshot();
         const resolve = deps.resolveReid ?? resolvePersonIdViaReid;
+        // Onda 7 §3.1: event.bbox vem normalizado 0..1 (normalizer divide
+        // pelo BBOX_FIXED_POINT_SCALE). Sidecar /embed espera pixel ints
+        // (FastAPI Form(int) rejeita "0.234"). Denormaliza via env (default
+        // 2688x1520 conforme Onda 6 probe — DH-IPC-HFW5442T-ASE).
+        const env = getEnv();
+        const pxBbox = {
+          x: Math.floor(event.bbox.x * env.CAMERA_FRAME_WIDTH),
+          y: Math.floor(event.bbox.y * env.CAMERA_FRAME_HEIGHT),
+          w: Math.floor(event.bbox.w * env.CAMERA_FRAME_WIDTH),
+          h: Math.floor(event.bbox.h * env.CAMERA_FRAME_HEIGHT),
+        };
         reidOut = await resolve({
           cameraId: event.camera_id,
           detectionId,
           detectedAt,
           sessionId,
-          bbox: event.bbox,
+          bbox: pxBbox,
           frameBytes,
           sessionInheritedPersonId: inheritedPersonId,
         });

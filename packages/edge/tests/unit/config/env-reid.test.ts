@@ -39,4 +39,12 @@ describe("env Onda 7 vars", () => {
   test("SNAPSHOTS_DIR defaults to /var/lib/vipcam/snapshots", () => {
     expect(parseEnv(BASE).SNAPSHOTS_DIR).toBe("/var/lib/vipcam/snapshots");
   });
+
+  test("CAMERA_FRAME_WIDTH defaults to 2688", () => {
+    expect(parseEnv(BASE).CAMERA_FRAME_WIDTH).toBe(2688);
+  });
+
+  test("CAMERA_FRAME_HEIGHT defaults to 1520", () => {
+    expect(parseEnv(BASE).CAMERA_FRAME_HEIGHT).toBe(1520);
+  });
 });
