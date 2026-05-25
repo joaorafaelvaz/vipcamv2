@@ -237,14 +237,16 @@ export function createServer() {
   // no ingest seguem dormentes, sem consumer.
   app.route("/api/events", createEventsRoutes({ recent: (limit) => recentDetections(limit) }));
 
-  // Onda 3 Task 3.2.6: snapshots públicos (nginx restringe LAN).
-  // Filename já é validado pela rota (regex anti-traversal); path.join é seguro.
-  const SNAPSHOTS_DIR = process.env.SNAPSHOTS_DIR ?? "/var/lib/vipcam/snapshots";
+  // Onda 3 Task 3.2.6 → Onda 7 §2.3: snapshots públicos (nginx restringe LAN).
+  // Layout `YYYY-MM-DD/<detection-uuid>.jpg` (Onda 7 Task 8 saveCrop).
+  // Cada segmento validado por regex na route (anti-traversal); path.join é
+  // seguro pós-regex. Não usar path.resolve (normalizaria `..` se entrasse).
+  const SNAPSHOTS_DIR = env.SNAPSHOTS_DIR;
   app.route(
     "/snapshots",
     createSnapshotsRoutes({
-      readSnapshot: async (filename) => {
-        const fullPath = path.join(SNAPSHOTS_DIR, filename);
+      readSnapshot: async (relativePath) => {
+        const fullPath = path.join(SNAPSHOTS_DIR, relativePath);
         try {
           return await fs.readFile(fullPath);
         } catch (err) {
