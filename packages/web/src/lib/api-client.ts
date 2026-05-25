@@ -42,13 +42,16 @@ export async function apiFetch<T>(path: string, opts: ApiOptions = {}): Promise<
   return (await res.json()) as T;
 }
 
-/** Constrói URL absoluta pra snapshot a partir do snapshot_path do edge. */
+/** Constrói URL absoluta pra snapshot a partir do snapshot_path do edge.
+ *
+ * Onda 7 §2.3: snapshot_path é path relativo formato 'YYYY-MM-DD/<uuid>.jpg'.
+ * URL final preserva ambos os segmentos pra rota /snapshots/:date/:filename
+ * (regex anti-traversal valida cada um separado).
+ */
 export function snapshotUrl(snapshotPath: string | null): string | null {
   if (!snapshotPath) return null;
-  const filename = snapshotPath.split("/").pop();
-  if (!filename) return null;
   const env = getClientEnv();
-  return `${env.NEXT_PUBLIC_API_URL}/snapshots/${filename}`;
+  return `${env.NEXT_PUBLIC_API_URL}/snapshots/${snapshotPath}`;
 }
 
 // ---- Discovery helpers (Onda 1, re-implementados via apiFetch) ----
