@@ -163,62 +163,121 @@ async function processCheckin(checkin: ErpCheckin) {
 
 ### 4.3 resolveAmbiguous bifurcation
 
-`packages/edge/src/match-temp/review.ts`. Reusa repo methods existentes (`resolveAmbiguous`, `rejectAmbiguous` em match-attempts.repo.ts:54+). **Não inventa `markResolved`** — bifurca antes de delegar.
+**Modificação in-place** de `packages/edge/src/match-temp/review.ts` — não cria wrapper novo, estende o `resolveAmbiguous` existente (linha 55) adicionando branch de divergência no topo.
 
+**Signature atual mantida** (3 args, sem userId — `decided_by:'user'` continua hardcoded; adicionar userId real é Onda 9-C/NextAuth, não escopo desta):
 ```typescript
-async function resolveAmbiguous(matchId: string, choice: ResolveChoice, userId: string) {
-  const m = await matchAttemptsRepo.findById(matchId);
-  if (!m) throw new ResolveError("not_found");
-  if (m.decision !== "ambiguous") throw new ResolveError("already_resolved");
-
-  if (m.previous_person_id) {
-    // Caso divergente (rows 4-5)
-    // Defensive: previous == candidate seria mergeInto no-op + throw — protege.
-    const checkin = await erpRepo.findCheckinById(m.erp_checkin_id);
-    if (!checkin) throw new ResolveError("checkin_gone");
-    const candidatePerson = await personsRepo.findByErpClientId(checkin.erp_client_id);
-    if (!candidatePerson) throw new ResolveError("candidate_person_gone");
-    if (m.previous_person_id === candidatePerson.id) {
-      // Stale state — previous foi merged em candidate por outro path. Trata
-      // como já-resolvido pra evitar mergeInto(X, X) crash.
-      return matchAttemptsRepo.markResolved(matchId, "auto_matched", userId);
-    }
-
-    if (choice.kind === "matched_to_candidate") {
-      try {
-        await personsRepo.mergeInto(m.previous_person_id, candidatePerson.id, userId);
-      } catch (err) {
-        // mergeInto throws bare Error se locked-lookup não-encontra a person
-        // (outro operador já resolveu/merged). Mapeia pra HTTP 409 via novo
-        // ResolveErrorCode.
-        if (err instanceof Error && /not found/i.test(err.message)) {
-          throw new ResolveError("concurrent_merge");
-        }
-        throw err;
-      }
-      await matchAttemptsRepo.resolveAmbiguous(matchId, m.detection_id, userId);
-    } else {
-      // rejected: mantém previous_person_id como dono. detection não muda.
-      await matchAttemptsRepo.rejectAmbiguous(matchId, choice.reason, userId);
-    }
-  } else {
-    // Caso clássico (rows 1-2 — mantém comportamento atual)
-    if (choice.kind === "matched_to_candidate") {
-      await detectionsRepo.assignPerson(choice.chosen_detection_id, candidatePersonOfCheckin.id);
-      await personsRepo.incrementVisitCount(candidatePersonOfCheckin.id, detection.detected_at);
-      await matchAttemptsRepo.resolveAmbiguous(matchId, choice.chosen_detection_id, userId);
-    } else {
-      await matchAttemptsRepo.rejectAmbiguous(matchId, choice.reason, userId);
-    }
-  }
-}
+export async function resolveAmbiguous(
+  matchAttemptId: string,
+  chosenDetectionId: string,
+  chosenPersonId: string,
+): Promise<void>
 ```
 
-**Novo ResolveErrorCode** em `match-temp/review.ts` (existente): `concurrent_merge` (mapeia pra HTTP 409), `checkin_gone` (404), `candidate_person_gone` (404).
+**Extensão do `ResolveErrorCode` enum existente** (linha 21 do review.ts):
+```typescript
+export type ResolveErrorCode =
+  | "not_found"
+  | "already_resolved"
+  | "detection_outside_window"
+  | "person_client_mismatch"
+  | "checkin_not_found"
+  // Onda 9-A:
+  | "concurrent_merge"          // → HTTP 409 (outro operador resolveu)
+  | "previous_person_gone";     // → HTTP 410 (W já foi deletada antes do resolve)
+```
 
-**HTTP 409 contract:** o route handler de `/api/matches/:id/resolve` cata `ResolveError("concurrent_merge")` → retorna `{error: "concurrent_merge"}` com status 409. UI invalida a query React Query → refresh automático mostra a lista atualizada (o ambiguous resolvido por outro operador some).
+(Note: `checkin_gone` do round anterior vira redundante — já existe `checkin_not_found`. `candidate_person_gone` vira redundante — `person_client_mismatch` cobre o caso de candidate inexistente nessa janela.)
 
-Endpoint `POST /api/matches/:id/resolve` permanece com mesmo schema de body. UI não precisa diferenciar caso clássico vs divergente — o body é igual.
+**Pseudo-código do branch novo** (antes da lógica existente):
+
+```typescript
+export async function resolveAmbiguous(
+  matchAttemptId: string,
+  chosenDetectionId: string,
+  chosenPersonId: string,
+): Promise<void> {
+  const db = getDb();
+  const [attempt] = await db.select().from(matchAttempts)
+    .where(eq(matchAttempts.id, matchAttemptId)).limit(1);
+  if (!attempt) throw new ResolveError("not_found", `match_attempt ${matchAttemptId} not found`);
+  if (attempt.decision !== "ambiguous") {
+    throw new ResolveError("already_resolved", `... decision=${attempt.decision}`);
+  }
+
+  // Onda 9-A: branch divergente — previous_person_id setado pelo orchestrator
+  // sinaliza que detection já tinha person_id (W) no momento do match.
+  if (attempt.previous_person_id) {
+    return resolveDivergent(attempt, chosenPersonId);
+  }
+
+  // Caso clássico (mantém código existente a partir daqui — checkin lookup,
+  // validações detection_outside_window e person_client_mismatch, INSERT
+  // detection.person_id, etc.)
+  // ... resto do código atual de resolveAmbiguous ...
+}
+
+// Helper interno NOVO (mesma module review.ts):
+async function resolveDivergent(
+  attempt: MatchAttempt,           // garantido attempt.previous_person_id != null
+  chosenPersonId: string,          // o candidate (Y) selecionado pela UI
+): Promise<void> {
+  // Defensive: stale state onde W já foi merged em Y por outro path.
+  if (attempt.previous_person_id === chosenPersonId) {
+    // No-op: o que UI pediu já está feito. Marca como resolved sem mergeInto.
+    return matchAttemptsRepo.resolveAmbiguous(
+      attempt.id,
+      attempt.detection_id!,
+      "auto-merged stale state (W already == Y)",
+    );
+  }
+
+  // Verifica W ainda existe (mergeInto vai locked-lookup mas dá throw bare —
+  // queremos ResolveError tipado em vez disso).
+  const w = await personsRepo.findById(attempt.previous_person_id);
+  if (!w) throw new ResolveError("previous_person_gone", `W (${attempt.previous_person_id}) já não existe`);
+
+  try {
+    // mergeInto faz tudo: lock LEAST/GREATEST, transfer face_records, audit,
+    // delete W. userId hardcoded "system" porque review.ts atual também não
+    // tem auth real (parâmetro idem ao classic flow).
+    await personsRepo.mergeInto(attempt.previous_person_id, chosenPersonId, "system");
+  } catch (err) {
+    if (err instanceof Error && /not found/i.test(err.message)) {
+      // Race com outro mergeInto que já consumiu W ou Y
+      throw new ResolveError("concurrent_merge", err.message);
+    }
+    throw err;
+  }
+
+  // Marca o match_attempt como resolvido. Reusa repo method existente.
+  await matchAttemptsRepo.resolveAmbiguous(
+    attempt.id,
+    attempt.detection_id!,
+    `merged ${attempt.previous_person_id} → ${chosenPersonId}`,
+  );
+}
+
+// Para o caso "rejected" do divergente (humano clicou "não é Maria"):
+// Reusa rejectAmbiguous existente diretamente — não precisa de wrapper. O
+// detection mantém previous_person_id (W) como antes; só marca o
+// match_attempt como rejected. Mesma lógica do caso clássico.
+```
+
+**HTTP status mapping** no route handler de `/api/matches/:id/resolve`:
+| ResolveErrorCode | HTTP |
+|---|---|
+| not_found | 404 |
+| already_resolved | 409 |
+| detection_outside_window | 400 |
+| person_client_mismatch | 400 |
+| checkin_not_found | 500 |
+| **concurrent_merge** | **409** (novo) |
+| **previous_person_gone** | **410** (novo) |
+
+**UI behavior em 409:** toast "Outro operador já resolveu este match — atualizando lista" + `queryClient.invalidateQueries(['matches','pending'])` → re-fetch automático faz o item sumir da fila.
+
+Endpoint `POST /api/matches/:id/resolve` permanece com mesmo schema de body (`{chosenDetectionId, chosenPersonId}`). UI não precisa diferenciar caso clássico vs divergente — o body é igual.
 
 ---
 
