@@ -1101,9 +1101,10 @@ describe("listPendingEnriched previous_person (Onda 9-A)", () => {
 
 Em `packages/edge/src/api/match-pending.ts`:
 
-(a) Adicionar import:
+(a) Adicionar imports (o arquivo atual só importa `matchAttemptsRepo` — precisa do schema `matchAttempts` p/ referenciar as colunas novas no select, e do `aliasedTable` p/ o LEFT JOIN duplo):
 ```typescript
 import { aliasedTable } from "drizzle-orm";
+import { matchAttempts } from "../persistence/schema/match-attempts.js";
 ```
 
 (b) Antes do `db.select(...)`, declarar alias:
