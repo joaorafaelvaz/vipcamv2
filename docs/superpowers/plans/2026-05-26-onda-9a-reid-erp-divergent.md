@@ -112,12 +112,13 @@ previous_person_snapshot: jsonb("previous_person_snapshot")
   .$type<Record<string, unknown>>(),
 ```
 
-Imports adicionais no topo (se ainda não tem):
+Imports adicionais no topo do arquivo:
 ```typescript
-import { jsonb, ... } from "drizzle-orm/pg-core";
+import { jsonb, ... } from "drizzle-orm/pg-core";    // adicionar jsonb à lista existente
+import { persons } from "./persons.js";              // novo import — necessário p/ .references()
 ```
 
-(Já tem `uuid` provavelmente — confirme antes.)
+(`uuid` já vem da lista atual do `drizzle-orm/pg-core`. Verifica `persons.ts` p/ confirmar que não importa de `match-attempts.ts` antes de adicionar — circular import quebraria o module loader.)
 
 - [ ] **Step 4: Run test (pass)**
 
@@ -472,68 +473,131 @@ describe("processCheckin divergent (Onda 9-A §5.1)", () => {
 
 - [ ] **Step 3: Implement refactor**
 
-Em `packages/edge/src/match-temp/orchestrator.ts`, na função `processCheckin`:
+> **Pré-requisito:** ler `packages/edge/src/match-temp/orchestrator.ts` inteiro antes de editar. O código atual JÁ tem `db.transaction` wrapping (C1, review 2026-05-13). A versão nova DEVE preservar isso — todos os WRITES (Pass 1 + Pass 2 + update processed_at) ficam dentro do mesmo `tx`. Também usa `detectionsRepo.linkToPerson(detectionId, personId)` (confirmado), `decideMatch(anonymousDetectionIds: readonly string[])` (assina array de strings, retorna `{decision, chosen_detection_id}`), e bootstrap de Person quando `persons.erp_client_id` ausente (lê de `erpClients` e cria — preservar esse comportamento).
 
-(a) Substituir a chamada `findAnonymousInWindow` por `findInWindow` no início:
-```typescript
-const allInWindow = await detectionsRepo.findInWindow(start, end);
-```
+Reescrita completa de `processCheckin` (substitui a função inteira, preservando contrato existente):
 
-(b) Adicionar guard pra `candidatePerson` ausente (log warning + return preservando processed_at flow):
 ```typescript
-const candidatePerson = await personsRepo.findByErpClientId(checkin.erp_client_id);
-if (!candidatePerson) {
-  logger.warn(
-    { erp_client_id: checkin.erp_client_id, checkin_id: checkin.erp_id },
-    "ERP client not in persons cache — checkin skipped; will retry on next sync",
+export async function processCheckin(checkin: ErpCheckin): Promise<void> {
+  if (checkin.processed_at) return;
+  const env = getEnv();
+  const window = computeWindow(checkin.occurred_at, env.MATCH_WINDOW_SECONDS);
+
+  // Onda 9-A: pega TODAS as detections na window (não só anônimas)
+  const allInWindow = await detectionsRepo.findInWindow(window.start, window.end);
+  const anonymous = allInWindow.filter((d) => d.person_id === null);
+  const identified = allInWindow.filter((d) => d.person_id !== null);
+
+  // Pass 1 clássico (preserva semântica Onda 2/3): decideMatch sobre IDs anônimos
+  const classic = decideMatch(anonymous.map((d) => d.id));
+
+  await getDb().transaction(async (tx) => {
+    // Bootstrap candidatePerson DENTRO da transaction (preserva atomicity do
+    // INSERT persons + linkToPerson). Reusa lookup persons.erp_client_id; se
+    // ausente, materializa de erp_clients (mesmo pattern do código atual).
+    const [existing] = await tx
+      .select()
+      .from(persons)
+      .where(eq(persons.erp_client_id, checkin.erp_client_id))
+      .limit(1);
+
+    let candidatePerson = existing ?? null;
+    if (!candidatePerson) {
+      const [erpClient] = await tx
+        .select()
+        .from(erpClients)
+        .where(eq(erpClients.erp_id, checkin.erp_client_id))
+        .limit(1);
+      const [created] = await tx
+        .insert(persons)
+        .values({
+          person_type: "client",
+          display_name: erpClient?.name ?? "Cliente",
+          erp_client_id: checkin.erp_client_id,
+        })
+        .returning();
+      if (!created) throw new Error("persons insert returned no row");
+      candidatePerson = created;
+    }
+
+    // Pass 1: clássico
+    if (classic.decision === "auto_matched" && classic.chosen_detection_id) {
+      const det = anonymous.find((d) => d.id === classic.chosen_detection_id);
+      if (!det) {
+        throw new Error(
+          `auto_matched chose ${classic.chosen_detection_id} but detection not in anonymous list`,
+        );
+      }
+      await tx.insert(matchAttempts).values({
+        detection_id: classic.chosen_detection_id,
+        erp_checkin_id: checkin.erp_id,
+        decision: "auto_matched",
+        decided_by: "system",
+      });
+      await tx
+        .update(detections)
+        .set({ person_id: candidatePerson.id })
+        .where(eq(detections.id, classic.chosen_detection_id));
+      if (det.session_id) {
+        await tx
+          .update(sessions)
+          .set({ person_id: candidatePerson.id, linked_erp_checkin_id: checkin.erp_id })
+          .where(eq(sessions.id, det.session_id));
+      }
+    } else if (classic.decision === "ambiguous") {
+      await tx.insert(matchAttempts).values({
+        // ambiguous clássico não fixa detection (UI escolhe na revisão)
+        erp_checkin_id: checkin.erp_id,
+        decision: "ambiguous",
+        decided_by: "system",
+        notes: `${anonymous.length} candidates`,
+        // previous_person_id default NULL = signal de "caso clássico"
+      });
+    }
+    // 'rejected' clássico (0 anônimas) = no-op de WRITE; Pass 2 abaixo ainda roda.
+
+    // Pass 2: divergent (Onda 9-A novo) — uma linha por detection identificada ≠ Y
+    for (const det of identified) {
+      if (det.person_id === candidatePerson.id) continue; // Row 3: NO-OP convergent
+      // Rows 4-5: ambiguous divergente. Snapshot denormaliza W p/ sobreviver
+      // a futuro SET NULL caso W seja merged/deletado depois.
+      const [prevPerson] = await tx
+        .select()
+        .from(persons)
+        .where(eq(persons.id, det.person_id as string))
+        .limit(1);
+      await tx.insert(matchAttempts).values({
+        detection_id: det.id,
+        erp_checkin_id: checkin.erp_id,
+        decision: "ambiguous",
+        decided_by: "system",
+        previous_person_id: det.person_id,
+        previous_person_snapshot: prevPerson as unknown as Record<string, unknown>,
+      });
+    }
+
+    // Marca checkin processed (ÚLTIMA write — se falhar, transação inteira reverte)
+    await tx
+      .update(erpCheckins)
+      .set({ processed_at: sql`now()` })
+      .where(eq(erpCheckins.erp_id, checkin.erp_id));
+  });
+
+  logger.info(
+    {
+      checkin: checkin.erp_id,
+      classic_decision: classic.decision,
+      anonymous: anonymous.length,
+      identified: identified.length,
+    },
+    "match temporal decision (2-pass)",
   );
-  // Não marca processed_at — re-roda no próximo poll quando syncClients popular
-  return;
 }
 ```
 
-(c) Pass 1 (clássico) — reusa decideMatch existente sobre filter NULL:
-```typescript
-const anonymous = allInWindow.filter((c) => c.person_id === null);
-const classic = decideMatch(anonymous);   // função/helper existente — preservar
-if (classic.decision === "auto_matched" && classic.chosen_detection_id) {
-  await matchAttemptsRepo.create({
-    detection_id: classic.chosen_detection_id,
-    erp_checkin_id: checkin.erp_id,
-    decision: "auto_matched",
-  });
-  await detectionsRepo.assignPerson(classic.chosen_detection_id, candidatePerson.id);
-} else if (classic.decision === "ambiguous") {
-  await matchAttemptsRepo.create({
-    detection_id: null,                  // ambiguous clássico não fixa detection
-    erp_checkin_id: checkin.erp_id,
-    decision: "ambiguous",
-    // previous_person_id default NULL = signal de "caso clássico"
-  });
-}
-// 'rejected' = no-op clássico
-```
+Imports verificados (já presentes no arquivo atual, manter): `eq`, `sql` de `drizzle-orm`; `getDb`; `detectionsRepo`, `erpRepo`; `detections`, `erpCheckins`, `erpClients`, `matchAttempts`, `persons`, `sessions`; `decideMatch`, `computeWindow`, `getEnv`, `logger`. **Nada novo a importar** — a refatoração só rearranja a lógica já alcançável.
 
-(d) Pass 2 (divergent — Onda 9-A novo):
-```typescript
-const identified = allInWindow.filter((c) => c.person_id !== null);
-for (const det of identified) {
-  if (det.person_id === candidatePerson.id) continue;     // Row 3 NO-OP
-  // Rows 4-5: ambiguous divergente
-  const prevPerson = await personsRepo.findById(det.person_id!);
-  await matchAttemptsRepo.create({
-    detection_id: det.id,
-    erp_checkin_id: checkin.erp_id,
-    decision: "ambiguous",
-    previous_person_id: det.person_id,
-    previous_person_snapshot: prevPerson as unknown as Record<string, unknown>,
-  });
-}
-```
-
-(e) Preservar update do `processed_at` no final (após ambos os passes) — verificar o código atual e manter o pattern.
-
-> **Verificar antes:** ler `orchestrator.ts` inteiro pra confirmar nome real do helper `decideMatch`, shape do retorno (`chosen_detection_id` ou outro nome), e nome do método `detectionsRepo.assignPerson` (se existir; senão usar `db.execute(sql)` inline).
+Atualizar o JSDoc da função (linhas 14-37 do arquivo atual) p/ refletir 2-pass + previous_person_id semantics. Mencionar Onda 9-A explicitamente.
 
 - [ ] **Step 4: Run test (pass)**
 
@@ -737,11 +801,14 @@ async function resolveDivergent(
 ): Promise<void> {
   // Stale state: W já é Y (algum outro path merged primeiro)
   if (attempt.previous_person_id === chosenPersonId) {
-    return matchAttemptsRepo.resolveAmbiguous(
+    // resolveAmbiguous retorna Promise<MatchAttempt | null>, mas resolveDivergent
+    // declara void — descarta retorno via await + return explícito.
+    await matchAttemptsRepo.resolveAmbiguous(
       attempt.id,
       attempt.detection_id!,
       "auto-merged stale state (W already == Y)",
     );
+    return;
   }
 
   // W ainda existe?
@@ -770,7 +837,10 @@ async function resolveDivergent(
 }
 ```
 
-Imports adicionais no topo: `personsRepo`, `matchAttemptsRepo` (provavelmente já tem).
+Imports adicionais no topo (verificar — arquivo atual NÃO tem `personsRepo`/`matchAttemptsRepo`, faz queries inline via `db.select(persons)...`. Adicionar):
+```typescript
+import { matchAttemptsRepo, personsRepo } from "../persistence/repositories/index.js";
+```
 
 - [ ] **Step 4: Run test (pass)**
 
@@ -815,6 +885,14 @@ function app(resolve: (...args: any[]) => Promise<void>) {
   });
 }
 
+// IMPORTANTE: route schema é snake_case (verificado em matches.ts:26-29 —
+// `chosen_detection_id` / `chosen_person_id`). Body camelCase seria 400 por
+// schema validation, NÃO 409/410 — mascararia o bug que queremos testar.
+const validBody = JSON.stringify({
+  chosen_detection_id: "11111111-1111-1111-1111-111111111111",
+  chosen_person_id: "22222222-2222-2222-2222-222222222222",
+});
+
 describe("POST /api/matches/:id/resolve error mapping (Onda 9-A)", () => {
   test("concurrent_merge → 409", async () => {
     const r = await app(async () => {
@@ -822,7 +900,7 @@ describe("POST /api/matches/:id/resolve error mapping (Onda 9-A)", () => {
     }).request("/rma-1/resolve", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chosenDetectionId: "det-1", chosenPersonId: "p-Y" }),
+      body: validBody,
     });
     expect(r.status).toBe(409);
     const body = await r.json();
@@ -835,7 +913,7 @@ describe("POST /api/matches/:id/resolve error mapping (Onda 9-A)", () => {
     }).request("/rma-1/resolve", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chosenDetectionId: "det-1", chosenPersonId: "p-Y" }),
+      body: validBody,
     });
     expect(r.status).toBe(410);
     expect((await r.json()).error).toBe("previous_person_gone");
@@ -847,7 +925,7 @@ describe("POST /api/matches/:id/resolve error mapping (Onda 9-A)", () => {
     }).request("/rma-1/resolve", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chosenDetectionId: "det-1", chosenPersonId: "p-Y" }),
+      body: validBody,
     });
     expect(r.status).toBe(404);
   });
@@ -860,28 +938,22 @@ describe("POST /api/matches/:id/resolve error mapping (Onda 9-A)", () => {
 
 - [ ] **Step 3: Update route handler**
 
-Em `packages/edge/src/api/routes/matches.ts`, encontrar o handler de `POST /:id/resolve` e estender o catch do `ResolveError` pra incluir os novos codes:
+`matches.ts:18-24` já tem `const RESOLVE_ERROR_STATUS: Record<ResolveErrorCode, ContentfulStatusCode>` — não é inline literal. Só adicionar 2 entries na Record existente (a extensão de `ResolveErrorCode` na Task 4 vai forçar TS a exigir as 2 chaves novas, garantindo exhaustiveness check):
 
 ```typescript
-} catch (err) {
-  if (err instanceof ResolveError) {
-    const status = {
-      not_found: 404,
-      already_resolved: 409,
-      detection_outside_window: 400,
-      person_client_mismatch: 400,
-      checkin_not_found: 500,
-      // Onda 9-A:
-      concurrent_merge: 409,
-      previous_person_gone: 410,
-    }[err.code] ?? 500;
-    return c.json({ error: err.code, message: err.message }, status);
-  }
-  throw err;
-}
+const RESOLVE_ERROR_STATUS: Record<ResolveErrorCode, ContentfulStatusCode> = {
+  not_found: 404,
+  already_resolved: 409,
+  detection_outside_window: 400,
+  person_client_mismatch: 400,
+  checkin_not_found: 500,
+  // Onda 9-A:
+  concurrent_merge: 409,
+  previous_person_gone: 410,
+};
 ```
 
-> **Verificar antes:** ler `matches.ts` pra ver shape exato do error handler atual. Se já tem switch/lookup pros codes existentes, só adicionar 2 entries.
+O catch handler (linhas 65-72) NÃO muda — usa `RESOLVE_ERROR_STATUS[err.code]` que automaticamente passa a mapear os 2 codes novos.
 
 - [ ] **Step 4: Run test (pass)**
 
@@ -1096,24 +1168,26 @@ git commit -m "feat(edge): Onda 9-A — match-pending enriquece com previous_per
 cd packages/shared && grep -rn "MatchPendingEnriched" src/
 ```
 
-Confirma path do arquivo.
+Path verificado: `packages/shared/src/types/index.ts` (interface começa na linha 61).
 
 - [ ] **Step 2: Add campo opcional**
 
-No arquivo identificado, dentro do `interface MatchPendingEnriched`:
+Editar a interface `MatchPendingEnriched` (linhas 61-75 do arquivo). Adicionar campo APÓS `candidates`:
 ```typescript
 export interface MatchPendingEnriched {
-  // ... campos existentes ...
+  // ... campos existentes (match_attempt_id, decided_at, notes, checkin, candidates) ...
   /**
    * Onda 9-A: presente apenas quando match_attempts.previous_person_id != null
    * (caso divergente reid+ERP). UI mostra warning block com info de W.
+   * `| null` (não só `undefined`) pq backend pode enviar null explicit quando
+   * o JOIN com prev_persons devolve linha mas FK SET NULL zerou no live state.
    */
   previous_person?: {
     id: string;
     display_name: string | null;
     person_type: "client" | "employee" | "anonymous";
     thumbnail_path: string | null;
-  };
+  } | null;
 }
 ```
 
@@ -1143,72 +1217,131 @@ git commit -m "feat(shared): Onda 9-A — MatchPendingEnriched.previous_person o
 
 - [ ] **Step 1: Failing test (4 edge cases)**
 
+> **Pré-requisito:** ler `packages/web/src/components/match-detail.tsx` E `packages/web/tests/unit/components/match-detail.test.tsx` (sibling) antes de escrever. Padrões obrigatórios verificados na sibling:
+> - `mock.module(...)` p/ `../../../src/lib/queries/matches` (useResolveMatch + useRejectMatch) e `../../../src/lib/api-client` (snapshotUrl) DEVE rodar ANTES do `await import("...match-detail")` — usar dynamic import dentro de cada `test`, não static import no topo.
+> - Componente real recebe `match: MatchPendingEnriched` com `checkin: {...}` (NÃO `detection`) + `candidates: DetectionThumbnail[]` + `decided_at` + `notes`. Sem QueryClientProvider necessário (os hooks ficam mockados).
+> - Componente tem candidate buttons "É essa pessoa" per-item E um único botão "Rejeitar" embaixo. NÃO existe global `handleAccept`/`candidateName`/`prevName`.
+
 `packages/web/tests/unit/components/match-detail-divergent.test.tsx`:
 ```typescript
 import { describe, expect, mock, test } from "bun:test";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
 import type { MatchPendingEnriched } from "@vipcam/shared";
 import * as React from "react";
 
-mock.module("../../../src/lib/api-client", () => ({
-  apiFetch: async () => undefined,
-  snapshotUrl: (p: string | null) => (p ? `/snapshots/${p}` : null),
-  ApiError: class extends Error {},
-}));
+let resolveCalls = 0;
+let rejectCalls = 0;
 
-import { MatchDetail } from "../../../src/components/match-detail";
-
-function wrap(child: React.ReactNode) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{child}</QueryClientProvider>;
-}
+const installMocks = () => {
+  mock.module("../../../src/lib/queries/matches", () => ({
+    useResolveMatch: () => ({
+      mutate: () => {
+        resolveCalls += 1;
+      },
+      isPending: false,
+    }),
+    useRejectMatch: () => ({
+      mutate: () => {
+        rejectCalls += 1;
+      },
+      isPending: false,
+    }),
+  }));
+  mock.module("../../../src/lib/api-client", () => ({
+    apiFetch: async () => ({}),
+    snapshotUrl: (p: string | null) => (p ? `/snapshots/${p}` : null),
+    ApiError: class extends Error {},
+  }));
+};
+installMocks();
 
 const baseMatch: MatchPendingEnriched = {
-  match_attempt_id: "att-1",
-  // Forma exata dos demais campos depende do shape atual — preencher com
-  // mocks mínimos válidos verificados via leitura do tipo MatchPendingEnriched.
-  detection: { id: "det-1", detected_at: "2026-05-26T14:00:00Z", snapshot_path: null, camera_id: "c" } as never,
-  candidates: [] as never,
-} as MatchPendingEnriched;
+  match_attempt_id: "11111111-1111-1111-1111-111111111111",
+  decided_at: "2026-05-26T14:00:00Z",
+  notes: null,
+  checkin: {
+    erp_id: "chk-1",
+    client_name: "Maria",
+    client_phone: "11999",
+    erp_client_id: "cli-y",
+    person_id: "22222222-2222-2222-2222-222222222222",
+    occurred_at: "2026-05-26T14:00:00Z",
+    event_type: "appointment_confirmed",
+  },
+  candidates: [
+    {
+      id: "33333333-3333-3333-3333-333333333333",
+      detected_at: "2026-05-26T14:00:30Z",
+      snapshot_path: null,
+      face_attrs: { age: 32, gender: "Female" },
+      dominant_emotion: "happy",
+      emotion_confidence: 0.8,
+      session_id: "ss1",
+      camera_id: "cam-1",
+    },
+  ],
+};
 
 describe("MatchDetail divergent (Onda 9-A)", () => {
-  test("clássico (sem previous_person) → não renderiza warning block", () => {
-    render(wrap(<MatchDetail match={baseMatch} />));
+  test("clássico (sem previous_person) → não renderiza warning block", async () => {
+    installMocks();
+    const { MatchDetail } = await import("../../../src/components/match-detail");
+    render(<MatchDetail match={baseMatch} />);
     expect(screen.queryByText(/já está ligada/i)).toBeNull();
   });
 
-  test("divergente com W nomeado → warning block visível com nome", () => {
-    const m = { ...baseMatch, previous_person: {
-      id: "p-W", display_name: "Wagner", person_type: "client" as const, thumbnail_path: "x.jpg",
-    }};
-    render(wrap(<MatchDetail match={m} />));
-    expect(screen.getByText(/já está ligada/i)).toBeDefined();
-    expect(screen.getByText(/Wagner/)).toBeDefined();
+  test("divergente com W nomeado → warning block visível com nome", async () => {
+    installMocks();
+    const { MatchDetail } = await import("../../../src/components/match-detail");
+    const m: MatchPendingEnriched = {
+      ...baseMatch,
+      previous_person: {
+        id: "p-W",
+        display_name: "Wagner",
+        person_type: "client",
+        thumbnail_path: "2026-05-20/wagner.jpg",
+      },
+    };
+    render(<MatchDetail match={m} />);
+    expect(screen.getByText(/já está ligada/i)).toBeTruthy();
+    expect(screen.getByText(/Wagner/)).toBeTruthy();
   });
 
-  test("W com display_name=null → fallback 'Anônima <prefix>'", () => {
-    const m = { ...baseMatch, previous_person: {
-      id: "p-anon-1234abcd", display_name: null, person_type: "anonymous" as const, thumbnail_path: null,
-    }};
-    render(wrap(<MatchDetail match={m} />));
-    expect(screen.getByText(/Anônima p-anon-1/i)).toBeDefined();
+  test("W com display_name=null → fallback 'Anônima <prefix>'", async () => {
+    installMocks();
+    const { MatchDetail } = await import("../../../src/components/match-detail");
+    const m: MatchPendingEnriched = {
+      ...baseMatch,
+      previous_person: {
+        id: "p-anon-1234abcd",
+        display_name: null,
+        person_type: "anonymous",
+        thumbnail_path: null,
+      },
+    };
+    render(<MatchDetail match={m} />);
+    expect(screen.getByText(/Anônima p-anon-1/i)).toBeTruthy();
   });
 
-  test("W sem thumbnail → avatar genérico (não img)", () => {
-    const m = { ...baseMatch, previous_person: {
-      id: "p-W", display_name: "W", person_type: "anonymous" as const, thumbnail_path: null,
-    }};
-    render(wrap(<MatchDetail match={m} />));
+  test("W sem thumbnail → sem img com alt 'previous'", async () => {
+    installMocks();
+    const { MatchDetail } = await import("../../../src/components/match-detail");
+    const m: MatchPendingEnriched = {
+      ...baseMatch,
+      previous_person: {
+        id: "p-W",
+        display_name: "W",
+        person_type: "anonymous",
+        thumbnail_path: null,
+      },
+    };
+    render(<MatchDetail match={m} />);
     const imgs = screen.queryAllByRole("img");
-    // Pode ter outras imgs no card (snapshot detection), mas nenhuma com alt="W previous"
     const wImg = imgs.find((i) => i.getAttribute("alt")?.toLowerCase().includes("previous"));
     expect(wImg).toBeUndefined();
   });
 });
 ```
-
-> **Verificar antes:** ler `match-detail.tsx` pra confirmar shape esperado do prop `match`. Pode ser que tenha sub-componentes (`MatchListItem`?) ou hook diferentes. Tests precisam alinhar com o componente real.
 
 - [ ] **Step 2: Run test (fail — warning não-renderiza)**
 
@@ -1216,11 +1349,16 @@ describe("MatchDetail divergent (Onda 9-A)", () => {
 
 - [ ] **Step 3: Implement warning block**
 
-Em `packages/web/src/components/match-detail.tsx`, antes do bloco de candidatos (verifica posicionamento real lendo o arquivo), adicionar:
+Editar `packages/web/src/components/match-detail.tsx`. Estrutura atual do componente (verificada):
+- header (linhas 31-44) — checkin client_name + phone + event_type + notes
+- grid de candidates (linhas 46-89) — cada item tem botão `"É essa pessoa"` que chama `handleResolve(det)`
+- footer (linhas 91-102) — único botão `"Rejeitar"` que chama `reject.mutate(...)` inline
+
+(a) Inserir o warning block ENTRE o header e o grid de candidates (depois da linha 44, antes da linha 46):
 
 ```tsx
 {match.previous_person && (
-  <div className="bg-yellow-50 border border-yellow-300 rounded-md p-3 mb-4 flex items-center gap-3">
+  <div className="bg-yellow-50 border border-yellow-300 rounded-md p-3 flex items-center gap-3">
     <div className="flex-shrink-0">
       {match.previous_person.thumbnail_path ? (
         <img
@@ -1229,18 +1367,17 @@ Em `packages/web/src/components/match-detail.tsx`, antes do bloco de candidatos 
           className="w-12 h-12 rounded-full object-cover"
         />
       ) : (
-        <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center text-slate-500">
+        <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 text-sm">
           ?
         </div>
       )}
     </div>
     <div className="text-sm">
-      <div className="font-semibold">
-        ⚠ Esta detection já está ligada a:
-      </div>
+      <div className="font-semibold">⚠ Esta detection já está ligada a:</div>
       <div>
         <span className="font-bold">
-          {match.previous_person.display_name ?? `Anônima ${match.previous_person.id.slice(0, 10)}`}
+          {match.previous_person.display_name ??
+            `Anônima ${match.previous_person.id.slice(0, 10)}`}
         </span>
         <span className="text-xs text-slate-500 ml-1">
           ({match.previous_person.person_type}) — auto-matched pelo reid
@@ -1251,19 +1388,49 @@ Em `packages/web/src/components/match-detail.tsx`, antes do bloco de candidatos 
 )}
 ```
 
-Adaptar os textos dos botões existentes quando `previous_person` presente:
+(b) Adaptar os labels dos botões existentes quando `previous_person` está presente. A copy precisa do nome de Y (do checkin) e do nome de W (fallback p/ "Anônima <prefix>" quando display_name null). Extrair em const no topo do componente, depois do `useRejectMatch()`:
+
 ```tsx
-<Button onClick={handleAccept}>
-  {match.previous_person
+const prevName =
+  match.previous_person?.display_name ??
+  (match.previous_person ? `Anônima ${match.previous_person.id.slice(0, 10)}` : null);
+const candidateName = match.checkin.client_name ?? "Cliente sem nome";
+const isDivergent = match.previous_person != null;
+```
+
+Trocar o label do botão per-candidate (linha 83 atual `É essa pessoa`):
+```tsx
+<Button
+  size="sm"
+  className="w-full text-xs"
+  disabled={resolve.isPending}
+  onClick={() => handleResolve(det)}
+>
+  {isDivergent
     ? `É ${candidateName} — merge ${prevName} → ${candidateName}`
-    : `Aceitar ${candidateName}`}
-</Button>
-<Button onClick={handleReject} variant="outline">
-  {match.previous_person ? `Não é ${candidateName} — manter ${prevName}` : "Rejeitar"}
+    : "É essa pessoa"}
 </Button>
 ```
 
-> **Edge case:** se `match.previous_person.id === <candidate person id>` (defensive — não deveria ocorrer), renderizar warning + mensagem "Já é o mesmo cliente — aguardando dedup automática" sem botões. Ver §5.2 spec.
+Trocar o label do botão "Rejeitar" (linha 100 atual):
+```tsx
+<Button
+  variant="outline"
+  size="sm"
+  disabled={reject.isPending}
+  onClick={() =>
+    reject.mutate({ id: match.match_attempt_id, reason: "operator rejection" })
+  }
+>
+  {isDivergent ? `Não é ${candidateName} — manter ${prevName}` : "Rejeitar"}
+</Button>
+```
+
+> **Edge case** (spec §5.2): se `match.previous_person.id === match.checkin.person_id` (W já é Y — stale state que escapou da dedup), renderizar warning + texto "Já é o mesmo cliente — aguardando dedup automática", desabilitar os botões. Implementar via:
+> ```tsx
+> const isStaleSame = match.previous_person?.id === match.checkin.person_id;
+> ```
+> e usar `disabled={resolve.isPending || isStaleSame}` nos botões + mostrar mensagem condicional no warning block.
 
 - [ ] **Step 4: Run test (pass)**
 
@@ -1292,22 +1459,37 @@ git commit -m "feat(web): Onda 9-A — match-detail warning block divergent + bo
 
 **Files:** nenhum novo — só verificação.
 
+- [ ] **Step 0: Baseline counts**
+
+Antes de qualquer mudança da Onda 9-A (idealmente registrar no início do trabalho, mas verificar agora se ainda não registrou):
+
+```bash
+git stash  # se houver mudanças soltas
+git checkout master
+cd packages/edge && bun run test 2>&1 | tail -3   # registrar: edge_baseline
+cd ../web && bun test 2>&1 | tail -3              # registrar: web_baseline
+git checkout onda-9a-reid-erp-divergent
+git stash pop  # se aplicável
+```
+
+Se o baseline já passou voou, use `git log --since="2 weeks" --oneline` p/ achar o último commit em master antes da Onda 9-A e fazer o checkout temporário. Anotar `edge_baseline` e `web_baseline` p/ comparar em Step 1.
+
 - [ ] **Step 1: Offline gates completos**
 
 ```bash
 bun --filter '*' typecheck       # 3/3 packages
 bun run lint                     # exit 0 esperado
-cd packages/edge && bun run test # 221 prev + ~15 novos
-cd packages/web && bun test      # 29 prev + 4 novos = 33
+cd packages/edge && bun run test
+cd packages/web && bun test
 cd packages/web && bun run build
 ```
 
 Esperado:
 - typecheck 3/3 ✓
 - lint exit 0
-- edge unit: 221 prev + Tasks 1+4+5 unit tests (~10) = ~231
-- web unit: 33 (29 prev + 4 novos)
-- web build ✓
+- edge unit: `edge_baseline` + novos testes (Task 1: 3, Task 4: 5, Task 5: 3) = baseline + 11 unit. Integration tests (Tasks 2, 3, 6) DB-deferred — não contam aqui.
+- web unit: `web_baseline` + 4 novos (Task 8)
+- web build ✓ (compila `/matches`)
 
 - [ ] **Step 2: DB-deferred tests inventory**
 
@@ -1319,12 +1501,11 @@ DB-deferred (rodar no VPS pós-deploy):
 - [ ] **Step 3: Pré-merge sanity**
 
 ```bash
-git log --oneline master..HEAD | wc -l   # ~10 commits esperado
 git log --oneline master..HEAD
-git diff master --stat | tail -10
+git diff master --stat | tail -15
 ```
 
-Confirma: spec (2) + Tasks 1-8 commits + plan (1) = ~11 commits.
+Sequência esperada (8 commits Onda 9-A + spec/plan já em branch): Task 1 (schema), Task 2 (findInWindow), Task 3 (orchestrator 2-pass), Task 4 (resolveDivergent), Task 5 (HTTP mapping), Task 6 (enrichment), Task 7 (shared type), Task 8 (web warning). Spec commits (3) + plan commits (1-2) já estavam antes. Total = baseline branch + 8 task commits.
 
 - [ ] **Step 4: Operational follow-up checklist (FOR HUMAN)**
 
