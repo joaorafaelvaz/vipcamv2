@@ -52,12 +52,12 @@
 
 ---
 
-## Chunk 1: Schema + Backend + UI + Tests
+## Chunk 1: Schema + Pipeline + Resolve Backend
 
-Onda focada (1 feature, sem sub-temas independentes), tudo em 1 chunk.
+Camada de dados e backend de detecção/resolve. Sai com schema novo, pipeline 2-pass, e endpoint `/resolve` bifurcado — tudo testável via integration + curl, sem UI.
 
-**Tasks:** 1-9.
-**Sequência estrita:** 1 (schema) → 2 (findInWindow) → 3 (orchestrator) → 4 (review bifurcation) → 5 (route handler) → 6 (enrichment backend) → 7 (shared type) → 8 (web UI) → 9 (final gates).
+**Tasks:** 1-5.
+**Sequência estrita:** 1 (schema) → 2 (findInWindow) → 3 (orchestrator) → 4 (review bifurcation) → 5 (route handler).
 
 ---
 
@@ -894,6 +894,16 @@ git add packages/edge/src/api/routes/matches.ts \
         packages/edge/tests/unit/api/routes/matches-resolve-errors.test.ts
 git commit -m "feat(edge): Onda 9-A — route /resolve mapeia concurrent_merge→409, previous_person_gone→410"
 ```
+
+---
+
+## Chunk 2: API Enrichment + Web UI + Smoke
+
+Superfície que o usuário vê. Backend de `/api/match-pending` traz `previous_person` (snapshot ou live), shared type ganha o novo campo, `match-detail.tsx` renderiza o warning block com 4 edge cases. Termina com smoke pré-deploy.
+
+**Tasks:** 6-9.
+**Sequência estrita:** 6 (enrichment backend) → 7 (shared type) → 8 (web UI) → 9 (final gates).
+**Pré-requisito:** Chunk 1 mergeado (schema + pipeline + resolve já em main).
 
 ---
 
