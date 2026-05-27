@@ -129,7 +129,8 @@ describe("MatchDetail divergent (Onda 9-A)", () => {
     const m: MatchPendingEnriched = {
       ...baseMatch,
       previous_person: {
-        id: baseMatch.checkin.person_id!,  // same as Y
+        // biome-ignore lint/style/noNonNullAssertion: baseMatch.checkin.person_id é literal UUID válido nas fixtures
+        id: baseMatch.checkin.person_id!, // same as Y
         display_name: "Maria",
         person_type: "client",
         thumbnail_path: null,

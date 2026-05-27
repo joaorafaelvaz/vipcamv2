@@ -18,7 +18,11 @@ const VALID_PERSON_TYPES = new Set<PersonType>(["client", "employee", "anonymous
  * cair no default "anonymous".
  */
 function snapshotPersonType(snap: Record<string, unknown> | null): PersonType | null {
-  if (snap && typeof snap.person_type === "string" && VALID_PERSON_TYPES.has(snap.person_type as PersonType)) {
+  if (
+    snap &&
+    typeof snap.person_type === "string" &&
+    VALID_PERSON_TYPES.has(snap.person_type as PersonType)
+  ) {
     return snap.person_type as PersonType;
   }
   return null;

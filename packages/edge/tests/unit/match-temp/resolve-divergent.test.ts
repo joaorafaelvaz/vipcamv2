@@ -83,10 +83,13 @@ describe("resolveAmbiguous divergent bifurcation (Onda 9-A)", () => {
     attemptReturn = {
       id: "att-3",
       decision: "ambiguous",
+      detection_id: "det-3",
       previous_person_id: "p-W-deleted",
     };
     prevPersonReturn = null;  // W foi deletada
-    await expect(resolveAmbiguous("att-3", "det-3", "p-Y")).rejects.toThrow(ResolveError);
+    await expect(resolveAmbiguous("att-3", "det-3", "p-Y")).rejects.toMatchObject({
+      code: "previous_person_gone",
+    });
     expect(mergeIntoCalls.length).toBe(0);
   });
 
@@ -94,6 +97,7 @@ describe("resolveAmbiguous divergent bifurcation (Onda 9-A)", () => {
     attemptReturn = {
       id: "att-4",
       decision: "ambiguous",
+      detection_id: "det-4",
       previous_person_id: "p-W",
     };
     prevPersonReturn = { id: "p-W" };

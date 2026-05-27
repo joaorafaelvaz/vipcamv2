@@ -205,29 +205,41 @@ async function resolveDivergent(
   attempt: typeof matchAttempts.$inferSelect,
   chosenPersonId: string,
 ): Promise<void> {
+  // Narrow os 2 FKs que SÃO non-null pra qualquer divergent attempt válido:
+  // - previous_person_id: garantido pelo guard `if (attempt.previous_person_id)`
+  //   na bifurcação de resolveAmbiguous (caller). Defensive throw aqui é
+  //   theater, mas elimina os `!` non-null assertions sem perder semântica.
+  // - detection_id: Pass 2 do orchestrator sempre seta `detection_id: det.id`
+  //   (orchestrator.ts:131-148). Se vier null, é data corruption — 500 OK.
+  const prevPersonId = attempt.previous_person_id;
+  const detectionId = attempt.detection_id;
+  if (!prevPersonId || !detectionId) {
+    throw new ResolveError(
+      "checkin_not_found",
+      `divergent attempt ${attempt.id} faltando previous_person_id ou detection_id (data corruption)`,
+    );
+  }
+
   // Stale state: W já é Y (algum outro path merged primeiro)
-  if (attempt.previous_person_id === chosenPersonId) {
+  if (prevPersonId === chosenPersonId) {
     // resolveAmbiguous retorna Promise<MatchAttempt | null>, mas resolveDivergent
     // declara void — descarta retorno via await + return explícito.
     await matchAttemptsRepo.resolveAmbiguous(
       attempt.id,
-      attempt.detection_id!,
+      detectionId,
       "auto-merged stale state (W already == Y)",
     );
     return;
   }
 
   // W ainda existe?
-  const w = await personsRepo.findById(attempt.previous_person_id!);
+  const w = await personsRepo.findById(prevPersonId);
   if (!w) {
-    throw new ResolveError(
-      "previous_person_gone",
-      `W (${attempt.previous_person_id}) já não existe`,
-    );
+    throw new ResolveError("previous_person_gone", `W (${prevPersonId}) já não existe`);
   }
 
   try {
-    await personsRepo.mergeInto(attempt.previous_person_id!, chosenPersonId, "system");
+    await personsRepo.mergeInto(prevPersonId, chosenPersonId, "system");
   } catch (err) {
     if (err instanceof Error && /not found/i.test(err.message)) {
       throw new ResolveError("concurrent_merge", err.message);
@@ -237,7 +249,7 @@ async function resolveDivergent(
 
   await matchAttemptsRepo.resolveAmbiguous(
     attempt.id,
-    attempt.detection_id!,
-    `merged ${attempt.previous_person_id} → ${chosenPersonId}`,
+    detectionId,
+    `merged ${prevPersonId} → ${chosenPersonId}`,
   );
 }

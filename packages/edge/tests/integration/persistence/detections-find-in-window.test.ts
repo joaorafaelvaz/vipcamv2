@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
+import { getDb } from "../../../src/persistence/db.js";
 import { detectionsRepo } from "../../../src/persistence/repositories/detections.repo.js";
 import { personsRepo } from "../../../src/persistence/repositories/persons.repo.js";
 import { sessionsRepo } from "../../../src/persistence/repositories/sessions.repo.js";
-import { getDb } from "../../../src/persistence/db.js";
 
 let cameraId: string;
 let personId: string;
@@ -39,7 +39,7 @@ describe("detectionsRepo.findInWindow", () => {
     });
     await detectionsRepo.create({
       camera_id: cameraId,
-      person_id: null,                      // anonymous
+      person_id: null, // anonymous
       session_id: sess.id,
       face_attrs: {},
       detected_at: new Date("2026-05-26T14:00:00Z"),
@@ -47,7 +47,7 @@ describe("detectionsRepo.findInWindow", () => {
     });
     await detectionsRepo.create({
       camera_id: cameraId,
-      person_id: personId,                  // identified
+      person_id: personId, // identified
       session_id: sess.id,
       face_attrs: {},
       detected_at: new Date("2026-05-26T14:01:00Z"),
@@ -74,14 +74,16 @@ describe("detectionsRepo.findInWindow", () => {
       person_id: null,
       session_id: null,
       face_attrs: {},
-      detected_at: new Date("2026-05-26T12:00:00Z"),    // 2h antes
+      detected_at: new Date("2026-05-26T12:00:00Z"), // 2h antes
       raw_event: {},
     });
     const rows = await detectionsRepo.findInWindow(
       new Date("2026-05-26T13:55:00Z"),
       new Date("2026-05-26T14:05:00Z"),
     );
-    const myDet = rows.find((r) => r.detected_at.getTime() === new Date("2026-05-26T12:00:00Z").getTime());
+    const myDet = rows.find(
+      (r) => r.detected_at.getTime() === new Date("2026-05-26T12:00:00Z").getTime(),
+    );
     expect(myDet).toBeUndefined();
   });
 });
