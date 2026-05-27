@@ -11,6 +11,13 @@ export function MatchDetail({ match }: { match: MatchPendingEnriched }) {
   const resolve = useResolveMatch();
   const reject = useRejectMatch();
 
+  const prevName =
+    match.previous_person?.display_name ??
+    (match.previous_person ? `Anônima ${match.previous_person.id.slice(0, 10)}` : null);
+  const candidateName = match.checkin.client_name ?? "Cliente sem nome";
+  const isDivergent = match.previous_person != null;
+  const isStaleSame = match.previous_person?.id === match.checkin.person_id;
+
   const handleResolve = (det: DetectionThumbnail) => {
     // person_id vem JÁ resolvido pelo backend (Chunk 3.1 Task 3.1.8 faz JOIN
     // persons WHERE erp_client_id = checkin.erp_client_id). Se null, cliente
@@ -42,6 +49,41 @@ export function MatchDetail({ match }: { match: MatchPendingEnriched }) {
           </Badge>
         )}
       </div>
+
+      {match.previous_person && (
+        <div className="bg-yellow-50 border border-yellow-300 rounded-md p-3 flex items-center gap-3">
+          <div className="flex-shrink-0">
+            {match.previous_person.thumbnail_path ? (
+              <img
+                src={snapshotUrl(match.previous_person.thumbnail_path) ?? ""}
+                alt="W previous person"
+                className="w-12 h-12 rounded-full object-cover"
+              />
+            ) : (
+              <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 text-sm">
+                ?
+              </div>
+            )}
+          </div>
+          <div className="text-sm">
+            <div className="font-semibold">⚠ Esta detection já está ligada a:</div>
+            <div>
+              <span className="font-bold">
+                {match.previous_person.display_name ??
+                  `Anônima ${match.previous_person.id.slice(0, 10)}`}
+              </span>
+              <span className="text-xs text-slate-500 ml-1">
+                ({match.previous_person.person_type}) — auto-matched pelo reid
+              </span>
+            </div>
+            {isStaleSame && (
+              <div className="text-xs text-amber-700 italic mt-1">
+                Já é o mesmo cliente — aguardando dedup automática
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {match.candidates.length === 0 ? (
         <div className="text-slate-500 italic py-4">
@@ -77,10 +119,12 @@ export function MatchDetail({ match }: { match: MatchPendingEnriched }) {
                 <Button
                   size="sm"
                   className="w-full text-xs"
-                  disabled={resolve.isPending}
+                  disabled={resolve.isPending || isStaleSame}
                   onClick={() => handleResolve(det)}
                 >
-                  É essa pessoa
+                  {isDivergent
+                    ? `É ${candidateName} — merge ${prevName} → ${candidateName}`
+                    : "É essa pessoa"}
                 </Button>
               </div>
             );
@@ -92,12 +136,12 @@ export function MatchDetail({ match }: { match: MatchPendingEnriched }) {
         <Button
           variant="outline"
           size="sm"
-          disabled={reject.isPending}
+          disabled={reject.isPending || isStaleSame}
           onClick={() =>
             reject.mutate({ id: match.match_attempt_id, reason: "operator rejection" })
           }
         >
-          Rejeitar
+          {isDivergent ? `Não é ${candidateName} — manter ${prevName}` : "Rejeitar"}
         </Button>
       </div>
     </div>
