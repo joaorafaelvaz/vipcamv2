@@ -57,6 +57,13 @@
       "when": 1779660919236,
       "tag": "0007_overjoyed_jackal",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1779844482863,
+      "tag": "0008_bizarre_randall",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,8 @@
 import { sql } from "drizzle-orm";
-import { index, pgEnum, pgTable, real, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgEnum, pgTable, real, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { detections } from "./detections.js";
 import { erpCheckins } from "./erp-cache.js";
+import { persons } from "./persons.js";
 
 export const matchDecision = pgEnum("match_decision", ["auto_matched", "ambiguous", "rejected"]);
 export const matchDecidedBy = pgEnum("match_decided_by", ["system", "user"]);
@@ -21,6 +22,14 @@ export const matchAttempts = pgTable(
     decided_at: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
     decided_by: matchDecidedBy("decided_by").notNull().default("system"),
     notes: text("notes"),
+    // Onda 9-A: presente apenas em divergent ambiguous (detection.person_id !=
+    // null no momento do orchestrator detectar conflito reid+ERP).
+    previous_person_id: uuid("previous_person_id").references(() => persons.id, {
+      onDelete: "set null",
+    }),
+    // Snapshot denormalizado de W (sobrevive a mergeInto futuro de W que zera
+    // o FK via SET NULL). Espelha pattern de person_merge_audit.src_snapshot.
+    previous_person_snapshot: jsonb("previous_person_snapshot").$type<Record<string, unknown>>(),
   },
   (t) => ({
     decision_idx: index("match_attempts_decision_idx").on(t.decision),
