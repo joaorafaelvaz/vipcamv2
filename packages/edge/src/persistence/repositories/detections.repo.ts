@@ -34,6 +34,38 @@ export const detectionsRepo = {
   },
 
   /**
+   * Onda 9-A: substitui findAnonymousInWindow no orchestrator. Retorna TODAS
+   * as detections na janela (NULL + non-NULL person_id) pra suportar §5.1
+   * rows 3-5 (conflito reid+ERP divergente) — o caller particiona por
+   * person_id (NULL → decideMatch clássico, non-NULL → loop divergent).
+   *
+   * findAnonymousInWindow continua existindo (Task 3 remove o uso no
+   * orchestrator; cleanup final acontece depois).
+   */
+  async findInWindow(
+    start: Date,
+    end: Date,
+  ): Promise<
+    Array<{
+      id: string;
+      detected_at: Date;
+      person_id: string | null;
+      snapshot_path: string | null;
+    }>
+  > {
+    return getDb()
+      .select({
+        id: detections.id,
+        detected_at: detections.detected_at,
+        person_id: detections.person_id,
+        snapshot_path: detections.snapshot_path,
+      })
+      .from(detections)
+      .where(between(detections.detected_at, start, end))
+      .orderBy(asc(detections.detected_at));
+  },
+
+  /**
    * Liga uma detection a uma pessoa (após match temporal/visual ou link manual).
    */
   async linkToPerson(detectionId: string, personId: string): Promise<void> {
