@@ -12,26 +12,40 @@ import { decideMatch } from "./matcher.js";
 import { computeWindow } from "./window.js";
 
 /**
- * Para um checkin não-processado, busca face anônimas dentro da janela ±N seg
- * e tenta vincular via decideMatch (matcher puro).
+ * Para um checkin não-processado, processa em DOIS PASSES sobre TODAS as
+ * detections na janela ±N seg (não só anônimas):
  *
- * Outcomes:
- * - rejected (0 candidatas): registra match_attempt, marca processed_at
- * - ambiguous (>1 candidatas): registra match_attempt c/ count, marca processed
- *   (UI de revisão manual em Onda 3)
- * - auto_matched (1 candidata):
+ * **Pass 1 (clássico — Onda 2/3):** decideMatch sobre detections com
+ * person_id IS NULL (anônimas).
+ * - rejected (0 anônimas): no-op de WRITE (Pass 2 ainda roda)
+ * - ambiguous (>1 anônimas): registra match_attempt c/ count (sem
+ *   detection_id, sem previous_person_id — sinal de "caso clássico")
+ * - auto_matched (1 anônima):
  *   - cria/reusa Person (person_type=client) vinculada a erp_client_id
- *   - linkToPerson na detection + session (com linked_erp_checkin_id)
- *   - registra match_attempt c/ chosen_detection_id, marca processed
+ *   - update na detection.person_id + session (com linked_erp_checkin_id)
+ *   - registra match_attempt c/ detection_id, decision=auto_matched
+ *
+ * **Pass 2 (divergent — Onda 9-A novo, §5.1 rows 3-5):** loop sobre
+ * detections com person_id != NULL (reid já identificou). Para cada uma:
+ * - se person_id == candidatePerson.id (Y do checkin) → NO-OP (row 3,
+ *   convergent — reid e ERP concordam)
+ * - se person_id != candidatePerson.id (rows 4-5, X anônima ou W cliente
+ *   diferente) → registra match_attempt c/ detection_id, decision=ambiguous,
+ *   previous_person_id=det.person_id, previous_person_snapshot=row inteira
+ *   da person W (denormaliza pra sobreviver a SET NULL caso W seja merged
+ *   ou deletado depois). UI de revisão (Onda 9-A) bifurca em "manter X"
+ *   vs "trocar pra Y" usando previous_person_id como sinal.
  *
  * Idempotente: skip se já tem processed_at.
  *
- * **C1 (review 2026-05-13):** todos os WRITES estão dentro de `db.transaction`
- * pra garantir all-or-nothing. Sem isso, partial failure (ex: linkToPerson
- * de session falha após criar match_attempt) deixava match_attempt órfão E
- * checkin unprocessed → próxima rodada criava match_attempt duplicado.
+ * **C1 (review 2026-05-13):** TODOS os WRITES (Pass 1 + Pass 2 + bootstrap
+ * de candidatePerson + processed_at update) ficam dentro de UMA `db.transaction`
+ * pra garantir all-or-nothing. Sem isso, partial failure deixava match_attempt
+ * órfão E checkin unprocessed → próxima rodada criava match_attempt duplicado.
+ * `processed_at` é a ÚLTIMA write — se qualquer Pass falhar, transação
+ * inteira reverte e o checkin volta pra fila do próximo poll.
  *
- * Reads (findAnonymousInWindow) ficam fora — não há requisito de SERIALIZABLE
+ * Reads (findInWindow) ficam fora — não há requisito de SERIALIZABLE
  * isolation entre read e write; vale aceitar que detection nova pode aparecer
  * entre read e write (bug benigno: pior caso é match_attempt c/ count desatualizado).
  */
@@ -40,86 +54,115 @@ export async function processCheckin(checkin: ErpCheckin): Promise<void> {
   const env = getEnv();
   const window = computeWindow(checkin.occurred_at, env.MATCH_WINDOW_SECONDS);
 
-  const anonymousDetections = await detectionsRepo.findAnonymousInWindow(window.start, window.end);
-  const decision = decideMatch(anonymousDetections.map((d) => d.id));
+  // Onda 9-A: pega TODAS as detections na window (não só anônimas)
+  const allInWindow = await detectionsRepo.findInWindow(window.start, window.end);
+  const anonymous = allInWindow.filter((d) => d.person_id === null);
+  const identified = allInWindow.filter((d) => d.person_id !== null);
+
+  // Pass 1 clássico (preserva semântica Onda 2/3): decideMatch sobre IDs anônimos
+  const classic = decideMatch(anonymous.map((d) => d.id));
 
   await getDb().transaction(async (tx) => {
-    // 1. Registra match_attempt
-    const attemptValues: typeof matchAttempts.$inferInsert = {
-      erp_checkin_id: checkin.erp_id,
-      decision: decision.decision,
-      decided_by: "system",
-    };
-    if (decision.chosen_detection_id) attemptValues.detection_id = decision.chosen_detection_id;
-    if (decision.decision === "ambiguous") {
-      attemptValues.notes = `${anonymousDetections.length} candidates`;
-    }
-    await tx.insert(matchAttempts).values(attemptValues);
+    // Bootstrap candidatePerson DENTRO da transaction (preserva atomicity do
+    // INSERT persons + linkToPerson). Reusa lookup persons.erp_client_id; se
+    // ausente, materializa de erp_clients (mesmo pattern do código pré-Onda 9-A).
+    const [existing] = await tx
+      .select()
+      .from(persons)
+      .where(eq(persons.erp_client_id, checkin.erp_client_id))
+      .limit(1);
 
-    // 2. Auto-match: cria/reusa Person + linka detection/session
-    if (decision.decision === "auto_matched" && decision.chosen_detection_id) {
-      const det = anonymousDetections.find((d) => d.id === decision.chosen_detection_id);
+    let candidatePerson = existing ?? null;
+    if (!candidatePerson) {
+      const [erpClient] = await tx
+        .select()
+        .from(erpClients)
+        .where(eq(erpClients.erp_id, checkin.erp_client_id))
+        .limit(1);
+      const [created] = await tx
+        .insert(persons)
+        .values({
+          person_type: "client",
+          display_name: erpClient?.name ?? "Cliente",
+          erp_client_id: checkin.erp_client_id,
+        })
+        .returning();
+      if (!created) throw new Error("persons insert returned no row");
+      candidatePerson = created;
+    }
+
+    // Pass 1: clássico
+    if (classic.decision === "auto_matched" && classic.chosen_detection_id) {
+      const det = anonymous.find((d) => d.id === classic.chosen_detection_id);
       if (!det) {
-        // Inalcançável: id veio da própria lista. Throw aborta a transação.
         throw new Error(
-          `auto_matched chose ${decision.chosen_detection_id} but detection not in list`,
+          `auto_matched chose ${classic.chosen_detection_id} but detection not in anonymous list`,
         );
       }
-
-      const personRows = await tx
-        .select()
-        .from(persons)
-        .where(eq(persons.erp_client_id, checkin.erp_client_id))
-        .limit(1);
-      let person = personRows[0];
-
-      if (!person) {
-        const clientRows = await tx
-          .select()
-          .from(erpClients)
-          .where(eq(erpClients.erp_id, checkin.erp_client_id))
-          .limit(1);
-        const erpClient = clientRows[0];
-        const [created] = await tx
-          .insert(persons)
-          .values({
-            person_type: "client",
-            display_name: erpClient?.name ?? "Cliente",
-            erp_client_id: checkin.erp_client_id,
-          })
-          .returning();
-        if (!created) throw new Error("persons insert returned no row");
-        person = created;
-      }
-
-      await tx.update(detections).set({ person_id: person.id }).where(eq(detections.id, det.id));
+      await tx.insert(matchAttempts).values({
+        detection_id: classic.chosen_detection_id,
+        erp_checkin_id: checkin.erp_id,
+        decision: "auto_matched",
+        decided_by: "system",
+      });
+      await tx
+        .update(detections)
+        .set({ person_id: candidatePerson.id })
+        .where(eq(detections.id, classic.chosen_detection_id));
       if (det.session_id) {
         await tx
           .update(sessions)
-          .set({ person_id: person.id, linked_erp_checkin_id: checkin.erp_id })
+          .set({ person_id: candidatePerson.id, linked_erp_checkin_id: checkin.erp_id })
           .where(eq(sessions.id, det.session_id));
       }
-      logger.info(
-        { person_id: person.id, detection_id: det.id, checkin_id: checkin.erp_id },
-        "auto-matched anonymous detection to ERP client",
-      );
-    } else {
-      logger.info(
-        {
-          decision: decision.decision,
-          candidates: anonymousDetections.length,
-          checkin: checkin.erp_id,
-        },
-        "match temporal decision",
-      );
+    } else if (classic.decision === "ambiguous") {
+      await tx.insert(matchAttempts).values({
+        // ambiguous clássico não fixa detection (UI escolhe na revisão)
+        erp_checkin_id: checkin.erp_id,
+        decision: "ambiguous",
+        decided_by: "system",
+        notes: `${anonymous.length} candidates`,
+        // previous_person_id default NULL = signal de "caso clássico"
+      });
+    }
+    // 'rejected' clássico (0 anônimas) = no-op de WRITE; Pass 2 abaixo ainda roda.
+
+    // Pass 2: divergent (Onda 9-A novo) — uma linha por detection identificada ≠ Y
+    for (const det of identified) {
+      if (det.person_id === candidatePerson.id) continue; // Row 3: NO-OP convergent
+      // Rows 4-5: ambiguous divergente. Snapshot denormaliza W p/ sobreviver
+      // a futuro SET NULL caso W seja merged/deletado depois.
+      const [prevPerson] = await tx
+        .select()
+        .from(persons)
+        .where(eq(persons.id, det.person_id as string))
+        .limit(1);
+      await tx.insert(matchAttempts).values({
+        detection_id: det.id,
+        erp_checkin_id: checkin.erp_id,
+        decision: "ambiguous",
+        decided_by: "system",
+        previous_person_id: det.person_id,
+        previous_person_snapshot: prevPerson as unknown as Record<string, unknown>,
+      });
     }
 
-    // 3. Marca checkin processed (ÚLTIMA write — se falhar, transação inteira reverte)
+    // Marca checkin processed (ÚLTIMA write — se falhar, transação inteira reverte)
     await tx
       .update(erpCheckins)
       .set({ processed_at: sql`now()` })
       .where(eq(erpCheckins.erp_id, checkin.erp_id));
   });
+
+  logger.info(
+    {
+      checkin: checkin.erp_id,
+      classic_decision: classic.decision,
+      anonymous: anonymous.length,
+      identified: identified.length,
+    },
+    "match temporal decision (2-pass)",
+  );
 }
 
 /**
