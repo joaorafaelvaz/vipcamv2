@@ -51,13 +51,19 @@ export function MatchDetail({ match }: { match: MatchPendingEnriched }) {
       </div>
 
       {match.previous_person && (
-        <div className="bg-yellow-50 border border-yellow-300 rounded-md p-3 flex items-center gap-3">
+        <div
+          role="alert"
+          className="bg-yellow-50 border border-yellow-300 rounded-md p-3 flex items-center gap-3"
+        >
           <div className="flex-shrink-0">
             {match.previous_person.thumbnail_path ? (
               <img
                 src={snapshotUrl(match.previous_person.thumbnail_path) ?? ""}
-                alt="W previous person"
+                alt={`Foto de ${prevName ?? "pessoa anterior"}`}
                 className="w-12 h-12 rounded-full object-cover"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = "none";
+                }}
               />
             ) : (
               <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 text-sm">
@@ -66,12 +72,12 @@ export function MatchDetail({ match }: { match: MatchPendingEnriched }) {
             )}
           </div>
           <div className="text-sm">
-            <div className="font-semibold">⚠ Esta detection já está ligada a:</div>
+            <div className="font-semibold">
+              <span className="sr-only">Atenção: </span>
+              <span aria-hidden="true">⚠</span> Esta detection já está ligada a:
+            </div>
             <div>
-              <span className="font-bold">
-                {match.previous_person.display_name ??
-                  `Anônima ${match.previous_person.id.slice(0, 10)}`}
-              </span>
+              <span className="font-bold">{prevName}</span>
               <span className="text-xs text-slate-500 ml-1">
                 ({match.previous_person.person_type}) — auto-matched pelo reid
               </span>
@@ -90,60 +96,69 @@ export function MatchDetail({ match }: { match: MatchPendingEnriched }) {
           Nenhuma candidata visível na janela. Apenas rejeite.
         </div>
       ) : (
-        <div className="grid grid-cols-3 gap-3">
-          {match.candidates.map((det) => {
-            const url = snapshotUrl(det.snapshot_path);
-            return (
-              <div key={det.id} className="border rounded-md p-2 text-center">
-                <div className="h-24 bg-slate-200 rounded mb-2 overflow-hidden flex items-center justify-center text-slate-400 text-xs">
-                  {url ? (
-                    <img
-                      src={url}
-                      alt=""
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = "none";
-                      }}
-                    />
-                  ) : (
-                    "sem foto"
-                  )}
+        !isStaleSame && (
+          <div className="grid grid-cols-3 gap-3">
+            {match.candidates.map((det) => {
+              const url = snapshotUrl(det.snapshot_path);
+              return (
+                <div key={det.id} className="border rounded-md p-2 text-center">
+                  <div className="h-24 bg-slate-200 rounded mb-2 overflow-hidden flex items-center justify-center text-slate-400 text-xs">
+                    {url ? (
+                      <img
+                        src={url}
+                        alt=""
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      "sem foto"
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-600 mb-1">
+                    {new Date(det.detected_at).toLocaleTimeString("pt-BR")}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mb-2">
+                    {(det.face_attrs.gender as string) ?? "?"} ·{" "}
+                    {(det.face_attrs.age as number) ?? "?"} · {det.dominant_emotion ?? "—"}
+                  </div>
+                  <Button
+                    size="sm"
+                    className="w-full text-xs"
+                    disabled={resolve.isPending}
+                    title={
+                      isDivergent
+                        ? `Ação irreversível: face_records de ${prevName} passam pra ${candidateName}, e ${prevName} é deletada`
+                        : undefined
+                    }
+                    onClick={() => handleResolve(det)}
+                  >
+                    {isDivergent
+                      ? `É ${candidateName} — merge ${prevName} → ${candidateName}`
+                      : "É essa pessoa"}
+                  </Button>
                 </div>
-                <div className="text-xs text-slate-600 mb-1">
-                  {new Date(det.detected_at).toLocaleTimeString("pt-BR")}
-                </div>
-                <div className="text-[10px] text-slate-500 mb-2">
-                  {(det.face_attrs.gender as string) ?? "?"} ·{" "}
-                  {(det.face_attrs.age as number) ?? "?"} · {det.dominant_emotion ?? "—"}
-                </div>
-                <Button
-                  size="sm"
-                  className="w-full text-xs"
-                  disabled={resolve.isPending || isStaleSame}
-                  onClick={() => handleResolve(det)}
-                >
-                  {isDivergent
-                    ? `É ${candidateName} — merge ${prevName} → ${candidateName}`
-                    : "É essa pessoa"}
-                </Button>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )
       )}
 
-      <div className="flex justify-end gap-2 pt-2 border-t">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={reject.isPending || isStaleSame}
-          onClick={() =>
-            reject.mutate({ id: match.match_attempt_id, reason: "operator rejection" })
-          }
-        >
-          {isDivergent ? `Não é ${candidateName} — manter ${prevName}` : "Rejeitar"}
-        </Button>
-      </div>
+      {!isStaleSame && (
+        <div className="flex justify-end gap-2 pt-2 border-t">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={reject.isPending}
+            onClick={() =>
+              reject.mutate({ id: match.match_attempt_id, reason: "operator rejection" })
+            }
+          >
+            {isDivergent ? `Não é ${candidateName} — manter ${prevName}` : "Rejeitar"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

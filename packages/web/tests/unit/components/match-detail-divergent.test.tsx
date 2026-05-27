@@ -122,4 +122,25 @@ describe("MatchDetail divergent (Onda 9-A)", () => {
     const wImg = imgs.find((i) => i.getAttribute("alt")?.toLowerCase().includes("previous"));
     expect(wImg).toBeUndefined();
   });
+
+  test("isStaleSame (W.id === checkin.person_id) → buttons hidden + italic caption visible", async () => {
+    installMocks();
+    const { MatchDetail } = await import("../../../src/components/match-detail");
+    const m: MatchPendingEnriched = {
+      ...baseMatch,
+      previous_person: {
+        id: baseMatch.checkin.person_id!,  // same as Y
+        display_name: "Maria",
+        person_type: "client",
+        thumbnail_path: null,
+      },
+    };
+    render(<MatchDetail match={m} />);
+    // Buttons hidden
+    expect(screen.queryByText(/é essa pessoa/i)).toBeNull();
+    expect(screen.queryByText(/rejeitar/i)).toBeNull();
+    expect(screen.queryByText(/merge/i)).toBeNull();
+    // Caption visible
+    expect(screen.getByText(/aguardando dedup automática/i)).toBeTruthy();
+  });
 });
