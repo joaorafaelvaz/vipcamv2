@@ -75,22 +75,10 @@ afterEach(async () => {
   await db.execute(sql`DELETE FROM cameras WHERE id = ${cameraId}`);
 });
 
-// TODO Task 7: substituir cast por MatchPendingEnriched direto quando o shared
-// type ganhar o campo previous_person.
-type PreviousPersonView = {
-  id: string;
-  display_name: string | null;
-  person_type: "client" | "employee" | "anonymous";
-  thumbnail_path: string | null;
-};
-type WithPrev = { previous_person?: PreviousPersonView };
-
 describe("listPendingEnriched previous_person (Onda 9-A)", () => {
   test("retorna previous_person populado quando previous_person_id != null", async () => {
     const items = await listPendingEnriched(50);
-    const ours = items.find((i) => i.match_attempt_id === attemptId) as
-      | ((typeof items)[number] & WithPrev)
-      | undefined;
+    const ours = items.find((i) => i.match_attempt_id === attemptId);
     expect(ours).toBeDefined();
     // biome-ignore lint/style/noNonNullAssertion: asserted above
     expect(ours!.previous_person).toBeDefined();
@@ -117,9 +105,7 @@ describe("listPendingEnriched previous_person (Onda 9-A)", () => {
       decision: "ambiguous",
     });
     const items = await listPendingEnriched(50);
-    const classic = items.find((i) => i.match_attempt_id === classicAtt.id) as
-      | ((typeof items)[number] & WithPrev)
-      | undefined;
+    const classic = items.find((i) => i.match_attempt_id === classicAtt.id);
     expect(classic).toBeDefined();
     // biome-ignore lint/style/noNonNullAssertion: asserted above
     expect(classic!.previous_person).toBeUndefined();

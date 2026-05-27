@@ -24,16 +24,11 @@ function snapshotPersonType(snap: Record<string, unknown> | null): PersonType | 
   return null;
 }
 
-// Onda 9-A: hoisted from .map() callback para facilitar Task 7 (deletar daqui
-// quando MatchPendingEnriched["previous_person"] for adicionado no shared type).
-// TODO Task 7: substituir PreviousPerson por MatchPendingEnriched["previous_person"]
-// quando o shared type ganhar o campo.
-type PreviousPerson = {
-  id: string;
-  display_name: string | null;
-  person_type: PersonType;
-  thumbnail_path: string | null;
-};
+// Onda 9-A: alias do campo do shared type p/ usar na construção do mapper.
+// `NonNullable` descarta o `| null` da union opcional (queremos o shape
+// concreto pra montar; o "null" é representado pela ausência via spread
+// condicional embaixo).
+type PreviousPerson = NonNullable<MatchPendingEnriched["previous_person"]>;
 
 /**
  * Lista match_attempts ambíguos enriquecidos com info do checkin + candidatas.
@@ -168,9 +163,7 @@ export async function listPendingEnriched(limit: number): Promise<MatchPendingEn
         session_id: d.session_id,
         camera_id: d.camera_id,
       })),
-      // TODO Task 7: remover cast quando MatchPendingEnriched.previous_person
-      // for adicionado no shared type.
       ...(previousPerson !== undefined ? { previous_person: previousPerson } : {}),
-    } as MatchPendingEnriched;
+    };
   });
 }
