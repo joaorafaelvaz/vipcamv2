@@ -4,7 +4,6 @@ import { processCheckin } from "../../../src/match-temp/orchestrator.js";
 import { getDb } from "../../../src/persistence/db.js";
 import { detectionsRepo } from "../../../src/persistence/repositories/detections.repo.js";
 import { personsRepo } from "../../../src/persistence/repositories/persons.repo.js";
-import { sessionsRepo } from "../../../src/persistence/repositories/sessions.repo.js";
 
 let cameraId: string;
 let clientY_personId: string;
@@ -149,7 +148,3 @@ describe("processCheckin divergent (Onda 9-A §5.1)", () => {
     expect(updated?.person_id).toBe(clientY_personId);
   });
 });
-
-// Silence unused import warning — sessionsRepo is imported per plan spec but not
-// used by the current scenarios (kept for symmetry with Task 2 pattern).
-void sessionsRepo;

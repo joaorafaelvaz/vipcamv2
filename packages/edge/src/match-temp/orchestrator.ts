@@ -47,7 +47,15 @@ import { computeWindow } from "./window.js";
  *
  * Reads (findInWindow) ficam fora — não há requisito de SERIALIZABLE
  * isolation entre read e write; vale aceitar que detection nova pode aparecer
- * entre read e write (bug benigno: pior caso é match_attempt c/ count desatualizado).
+ * entre read e write. Trade-offs por Pass:
+ * - **Pass 1 (clássico):** pior caso = match_attempt c/ count desatualizado
+ *   (benigno — UI mostra contagem ligeiramente stale, sem perda funcional).
+ * - **Pass 2 (divergent):** pior caso = detection identificada nova que chega
+ *   ENTRE findInWindow e a transação é silenciosamente PERDIDA (nenhum
+ *   match_attempt divergente é registrado pra esse checkin, porque `processed_at`
+ *   é setado dentro da tx). Aceitável pra Onda 9-A — fix deferido pra Onda
+ *   futura (opções: re-poll do checkin, advisory lock no erp_checkin_id, ou
+ *   SERIALIZABLE isolation).
  */
 export async function processCheckin(checkin: ErpCheckin): Promise<void> {
   if (checkin.processed_at) return;
@@ -137,6 +145,21 @@ export async function processCheckin(checkin: ErpCheckin): Promise<void> {
         .from(persons)
         .where(eq(persons.id, det.person_id as string))
         .limit(1);
+      if (!prevPerson) {
+        // Dangling FK: detection.person_id aponta pra person deletada (race c/
+        // merge concorrente, ou inconsistência FK). Snapshot existe justamente
+        // pra sobreviver SET NULL futuro — sem guard, gravaríamos NULL no
+        // snapshot e o registro divergente seria inútil. Melhor pular a tentativa.
+        logger.warn(
+          {
+            detection_id: det.id,
+            dangling_person_id: det.person_id,
+            checkin_id: checkin.erp_id,
+          },
+          "detection.person_id points to deleted person — skipping divergent attempt",
+        );
+        continue;
+      }
       await tx.insert(matchAttempts).values({
         detection_id: det.id,
         erp_checkin_id: checkin.erp_id,
