@@ -8,6 +8,33 @@ import { detections } from "../persistence/schema/detections.js";
 import { erpCheckins, erpClients } from "../persistence/schema/erp-cache.js";
 import { persons } from "../persistence/schema/persons.js";
 
+type PersonType = "client" | "employee" | "anonymous";
+const VALID_PERSON_TYPES = new Set<PersonType>(["client", "employee", "anonymous"]);
+
+/**
+ * Onda 9-A: valida snapshot.person_type contra o enum conhecido. Snapshot é
+ * JSONB livre — typeof === "string" não basta (deixa passar valores futuros
+ * como "manager" ou lixo corrompido). Retorna null se inválido para o caller
+ * cair no default "anonymous".
+ */
+function snapshotPersonType(snap: Record<string, unknown> | null): PersonType | null {
+  if (snap && typeof snap.person_type === "string" && VALID_PERSON_TYPES.has(snap.person_type as PersonType)) {
+    return snap.person_type as PersonType;
+  }
+  return null;
+}
+
+// Onda 9-A: hoisted from .map() callback para facilitar Task 7 (deletar daqui
+// quando MatchPendingEnriched["previous_person"] for adicionado no shared type).
+// TODO Task 7: substituir PreviousPerson por MatchPendingEnriched["previous_person"]
+// quando o shared type ganhar o campo.
+type PreviousPerson = {
+  id: string;
+  display_name: string | null;
+  person_type: PersonType;
+  thumbnail_path: string | null;
+};
+
 /**
  * Lista match_attempts ambíguos enriquecidos com info do checkin + candidatas.
  *
@@ -104,27 +131,15 @@ export async function listPendingEnriched(limit: number): Promise<MatchPendingEn
     // Onda 9-A: previous_person populado em divergent ambiguous. Prefere LIVE
     // (prevPersonsById) sobre snapshot (previous_person_snapshot) — snapshot só
     // entra em cena se W já não existe (hard-merge pós-creation do attempt).
-    // TODO Task 7: substituir PreviousPerson local por
-    // MatchPendingEnriched["previous_person"] quando o shared type ganhar o campo.
-    type PreviousPerson = {
-      id: string;
-      display_name: string | null;
-      person_type: "client" | "employee" | "anonymous";
-      thumbnail_path: string | null;
-    };
     let previousPerson: PreviousPerson | undefined;
     if (a.previous_person_id !== null) {
       const live = prevPersonsById.get(a.previous_person_id);
-      const snap = (a.previous_person_snapshot ?? null) as Record<string, unknown> | null;
+      const snap = a.previous_person_snapshot as Record<string, unknown> | null;
       previousPerson = {
         id: a.previous_person_id,
         display_name:
           live?.display_name ?? (typeof snap?.display_name === "string" ? snap.display_name : null),
-        person_type: (live?.person_type ??
-          (typeof snap?.person_type === "string" ? snap.person_type : "anonymous")) as
-          | "client"
-          | "employee"
-          | "anonymous",
+        person_type: live?.person_type ?? snapshotPersonType(snap) ?? "anonymous",
         thumbnail_path:
           live?.thumbnail_path ??
           (typeof snap?.thumbnail_path === "string" ? snap.thumbnail_path : null),
