@@ -41,6 +41,12 @@ export const detectionsRepo = {
    *
    * findAnonymousInWindow continua existindo (Task 3 remove o uso no
    * orchestrator; cleanup final acontece depois).
+   *
+   * `session_id` é incluído no projection porque é required pelo orchestrator
+   * auto-match session-linkage path (Task 3): ao confirmar match, atualizamos
+   * sessions.person_id/linked_erp_checkin_id usando det.session_id. Sem esse
+   * campo, a branch de auto-match silenciosamente no-op e quebra o
+   * comportamento existente de Onda 2/3.
    */
   async findInWindow(
     start: Date,
@@ -50,6 +56,7 @@ export const detectionsRepo = {
       id: string;
       detected_at: Date;
       person_id: string | null;
+      session_id: string | null;
       snapshot_path: string | null;
     }>
   > {
@@ -58,6 +65,7 @@ export const detectionsRepo = {
         id: detections.id,
         detected_at: detections.detected_at,
         person_id: detections.person_id,
+        session_id: detections.session_id,
         snapshot_path: detections.snapshot_path,
       })
       .from(detections)

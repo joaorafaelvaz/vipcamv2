@@ -58,12 +58,14 @@ describe("detectionsRepo.findInWindow", () => {
       new Date("2026-05-26T13:55:00Z"),
       new Date("2026-05-26T14:05:00Z"),
     );
-    const inCamera = rows.filter((r) => r.id);
-    expect(inCamera.length).toBeGreaterThanOrEqual(2);
-    const nullCount = inCamera.filter((r) => r.person_id === null).length;
-    const identifiedCount = inCamera.filter((r) => r.person_id === personId).length;
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    const nullCount = rows.filter((r) => r.person_id === null).length;
+    const identifiedRows = rows.filter((r) => r.person_id === personId);
     expect(nullCount).toBeGreaterThanOrEqual(1);
-    expect(identifiedCount).toBeGreaterThanOrEqual(1);
+    expect(identifiedRows.length).toBeGreaterThanOrEqual(1);
+    // session_id deve estar populado no projection (required pelo auto-match
+    // session-linkage path do orchestrator — Task 3).
+    expect(identifiedRows[0]?.session_id).toBe(sess.id);
   });
 
   test("fora da janela não retorna", async () => {
