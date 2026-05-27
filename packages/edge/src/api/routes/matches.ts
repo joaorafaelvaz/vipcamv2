@@ -21,6 +21,9 @@ const RESOLVE_ERROR_STATUS: Record<ResolveErrorCode, ContentfulStatusCode> = {
   detection_outside_window: 400,
   person_client_mismatch: 400,
   checkin_not_found: 500,
+  // Onda 9-A:
+  concurrent_merge: 409,
+  previous_person_gone: 410,
 };
 
 const resolveBody = z.object({

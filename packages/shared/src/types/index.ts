@@ -72,6 +72,18 @@ export interface MatchPendingEnriched {
     event_type: string;
   };
   candidates: DetectionThumbnail[];
+  /**
+   * Onda 9-A: presente apenas quando match_attempts.previous_person_id != null
+   * (caso divergente reid+ERP). UI mostra warning block com info de W.
+   * `| null` (não só `undefined`) pq backend pode enviar null explicit quando
+   * o JOIN com prev_persons devolve linha mas FK SET NULL zerou no live state.
+   */
+  previous_person?: {
+    id: UUID;
+    display_name: string | null;
+    person_type: "client" | "employee" | "anonymous";
+    thumbnail_path: string | null;
+  } | null;
 }
 
 export interface LiveDetectionEvent {

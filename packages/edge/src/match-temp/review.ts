@@ -2,6 +2,7 @@ import { and, between, eq, isNull, sql } from "drizzle-orm";
 import { getEnv } from "../config/env.js";
 import { logger } from "../obs/logger.js";
 import { getDb } from "../persistence/db.js";
+import { matchAttemptsRepo, personsRepo } from "../persistence/repositories/index.js";
 import { detections } from "../persistence/schema/detections.js";
 import { erpCheckins } from "../persistence/schema/erp-cache.js";
 import { matchAttempts } from "../persistence/schema/match-attempts.js";
@@ -17,13 +18,22 @@ import { computeWindow } from "./window.js";
  * - person_client_mismatch (400): person.erp_client_id existe e é ≠ checkin.erp_client_id
  *   (impede vincular Person de OUTRO cliente ao checkin atual)
  * - checkin_not_found (500): match_attempt referencia erp_checkin_id que sumiu (data corruption)
+ *
+ * Onda 9-A (branch divergente — previous_person_id != null):
+ * - concurrent_merge (409): personsRepo.mergeInto falhou com "not found" — outro
+ *   operador/path resolveu a mesma ambiguidade primeiro (race). UI deve refresh.
+ * - previous_person_gone (409): W (previous_person_id) já não existe no DB — foi
+ *   merged/deletada antes deste resolve. UI deve refresh.
  */
 export type ResolveErrorCode =
   | "not_found"
   | "already_resolved"
   | "detection_outside_window"
   | "person_client_mismatch"
-  | "checkin_not_found";
+  | "checkin_not_found"
+  // Onda 9-A:
+  | "concurrent_merge"
+  | "previous_person_gone";
 
 export class ResolveError extends Error {
   constructor(
@@ -73,6 +83,10 @@ export async function resolveAmbiguous(
       "already_resolved",
       `match_attempt ${matchAttemptId} has decision=${attempt.decision} (only ambiguous can be resolved)`,
     );
+  }
+  // Onda 9-A: branch divergente
+  if (attempt.previous_person_id) {
+    return resolveDivergent(attempt, chosenPersonId);
   }
   if (!attempt.erp_checkin_id) {
     throw new ResolveError(
@@ -170,5 +184,72 @@ export async function resolveAmbiguous(
       checkin_id: checkin.erp_id,
     },
     "manual match resolution applied",
+  );
+}
+
+/**
+ * Onda 9-A: branch divergente do resolveAmbiguous.
+ *
+ * Quando match_attempt.previous_person_id != null, significa que detection já
+ * tinha Person W vinculada (reID/Phase-A) ANTES do ERP checkin ter chegado com
+ * Person Y diferente. Operador clicando "É essa pessoa" em Y precisa que W seja
+ * merged em Y — não apenas link novo (que deixaria histórico W órfão).
+ *
+ * Outcomes:
+ *  - stale (W == Y): alguém já fez o merge → só marca attempt como resolved
+ *  - happy: personsRepo.mergeInto(W → Y) + marca resolved
+ *  - previous_person_gone: W foi deletada/merged → ResolveError 409
+ *  - concurrent_merge: mergeInto falhou com "not found" (race) → ResolveError 409
+ */
+async function resolveDivergent(
+  attempt: typeof matchAttempts.$inferSelect,
+  chosenPersonId: string,
+): Promise<void> {
+  // Narrow os 2 FKs que SÃO non-null pra qualquer divergent attempt válido:
+  // - previous_person_id: garantido pelo guard `if (attempt.previous_person_id)`
+  //   na bifurcação de resolveAmbiguous (caller). Defensive throw aqui é
+  //   theater, mas elimina os `!` non-null assertions sem perder semântica.
+  // - detection_id: Pass 2 do orchestrator sempre seta `detection_id: det.id`
+  //   (orchestrator.ts:131-148). Se vier null, é data corruption — 500 OK.
+  const prevPersonId = attempt.previous_person_id;
+  const detectionId = attempt.detection_id;
+  if (!prevPersonId || !detectionId) {
+    throw new ResolveError(
+      "checkin_not_found",
+      `divergent attempt ${attempt.id} faltando previous_person_id ou detection_id (data corruption)`,
+    );
+  }
+
+  // Stale state: W já é Y (algum outro path merged primeiro)
+  if (prevPersonId === chosenPersonId) {
+    // resolveAmbiguous retorna Promise<MatchAttempt | null>, mas resolveDivergent
+    // declara void — descarta retorno via await + return explícito.
+    await matchAttemptsRepo.resolveAmbiguous(
+      attempt.id,
+      detectionId,
+      "auto-merged stale state (W already == Y)",
+    );
+    return;
+  }
+
+  // W ainda existe?
+  const w = await personsRepo.findById(prevPersonId);
+  if (!w) {
+    throw new ResolveError("previous_person_gone", `W (${prevPersonId}) já não existe`);
+  }
+
+  try {
+    await personsRepo.mergeInto(prevPersonId, chosenPersonId, "system");
+  } catch (err) {
+    if (err instanceof Error && /not found/i.test(err.message)) {
+      throw new ResolveError("concurrent_merge", err.message);
+    }
+    throw err;
+  }
+
+  await matchAttemptsRepo.resolveAmbiguous(
+    attempt.id,
+    detectionId,
+    `merged ${prevPersonId} → ${chosenPersonId}`,
   );
 }
