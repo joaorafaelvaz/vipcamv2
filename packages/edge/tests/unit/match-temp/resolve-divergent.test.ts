@@ -6,7 +6,7 @@ let attemptReturn: Record<string, unknown> | null = null;
 let prevPersonReturn: Record<string, unknown> | null = null;
 let mergeIntoCalls: Array<[string, string, string]> = [];
 let mergeIntoThrow: Error | null = null;
-let resolveAmbigCalls: Array<[string, string, string?]> = [];
+let resolveAmbigCalls: Array<[string, string, string | undefined]> = [];
 
 const installMocks = () => {
   mock.module("../../../src/persistence/repositories/match-attempts.repo.js", () => ({
