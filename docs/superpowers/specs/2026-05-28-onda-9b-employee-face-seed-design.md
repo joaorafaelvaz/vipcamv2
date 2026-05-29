@@ -231,7 +231,7 @@ Hourly scheduler tick
 
 Scheduler único (ver `packages/edge/src/erp-sync/scheduler.ts` da Onda 2), sem 2 syncs simultâneos. `insertAndEvict` é atômica (Drizzle transaction). Nada novo de lock necessário.
 
-**Sync overrun:** scheduler atual roda employees + clients + checkins sequencialmente no mesmo loop hourly. 6-12 min do seeder na primeira rodada NÃO interfere com clientes (15 min cadence) nem checkins (30s — esses são separate cron jobs já). Verificar no plan se há lock compartilhado que segura outros syncs (não-esperado, mas vale 1 leitura do scheduler.ts).
+**Sync overrun:** scheduler atual roda employees + clients + checkins sequencialmente no mesmo loop hourly. Estimativa do seeder na primeira rodada: ~1.5min otimista, ~10min pior caso (sidecar cold/fetch lento — vide §5.5). NÃO interfere com clientes (15 min cadence) nem checkins (30s — esses são separate cron jobs já). Verificar no plan se há lock compartilhado que segura outros syncs (não-esperado, mas vale 1 leitura do scheduler.ts).
 
 ### 5.5 Throughput
 
