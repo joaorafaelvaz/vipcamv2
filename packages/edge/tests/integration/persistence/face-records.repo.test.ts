@@ -63,4 +63,29 @@ describe("faceRecordsRepo", () => {
     const found = await faceRecordsRepo.findPrimaryByPersonId(person.id);
     expect(found?.id).toBe(primary.id);
   });
+
+  /**
+   * Onda 9-B: countByPerson é usado pelo employee-face-seeder pra decidir
+   * skip via token-unchanged vs re-embed (token igual mas count=0 → re-embed).
+   */
+  test("countByPerson retorna 0 quando vazio, N quando inseridos", async () => {
+    const person = await personsRepo.create({ display_name: "test cnt" });
+    expect(await faceRecordsRepo.countByPerson(person.id)).toBe(0);
+
+    await faceRecordsRepo.insertAndEvict({
+      person_id: person.id,
+      embedding: ZERO_EMBEDDING,
+      snapshot_path: "test/dummy1.jpg",
+      is_primary: true,
+    });
+    expect(await faceRecordsRepo.countByPerson(person.id)).toBe(1);
+
+    await faceRecordsRepo.insertAndEvict({
+      person_id: person.id,
+      embedding: ZERO_EMBEDDING,
+      snapshot_path: "test/dummy2.jpg",
+      is_primary: false,
+    });
+    expect(await faceRecordsRepo.countByPerson(person.id)).toBe(2);
+  });
 });

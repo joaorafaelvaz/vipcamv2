@@ -37,6 +37,20 @@ export const faceRecordsRepo = {
     return rows[0] ?? null;
   },
 
+  /**
+   * Onda 9-B: count usado pelo employee-face-seeder pra decidir skip via
+   * token-unchanged vs re-embed (caso operador deletou face_records manualmente
+   * — token igual mas count=0 deve re-embeddar). Query barata via index
+   * face_records_person_idx existente.
+   */
+  async countByPerson(personId: string): Promise<number> {
+    const [row] = await getDb()
+      .select({ n: sql<number>`count(*)::int` })
+      .from(faceRecords)
+      .where(eq(faceRecords.person_id, personId));
+    return row?.n ?? 0;
+  },
+
   async delete(id: string): Promise<void> {
     await getDb().delete(faceRecords).where(eq(faceRecords.id, id));
   },
