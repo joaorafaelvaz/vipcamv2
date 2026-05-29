@@ -44,6 +44,10 @@ export const faceRecords = pgTable(
     // Qualidade do crop usado pra gerar este embedding (debug + filtro futuro).
     det_score: real("det_score"),
     created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Onda 9-B: discrimina origem do embedding. Default "live_detection"
+    // backfilla automaticamente rows existentes (Onda 7 pipeline). Seeder
+    // novo (erp-sync/employee-face-seeder.ts) usa "erp_seed".
+    source: text("source").notNull().default("live_detection"),
   },
   (t) => ({
     person_idx: index("face_records_person_idx").on(t.person_id),
