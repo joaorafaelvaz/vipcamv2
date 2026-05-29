@@ -11,8 +11,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { getEnv } from "../../../src/config/env.js";
-import { seedEmployeeFace } from "../../../src/erp-sync/employee-face-seeder.js";
 import { makeProductionDeps } from "../../../src/erp-sync/employee-face-seeder-deps.js";
+import { seedEmployeeFace } from "../../../src/erp-sync/employee-face-seeder.js";
 import { getDb } from "../../../src/persistence/db.js";
 import { faceRecordsRepo, personsRepo } from "../../../src/persistence/repositories/index.js";
 
@@ -27,8 +27,7 @@ let personId: string;
 beforeAll(async () => {
   if (!FIXTURE_AVAILABLE) {
     console.warn(
-      `[onda-9b] integration tests skipped — fixture missing: ${FIXTURE_PATH}\n` +
-        `         vide tests/fixtures/employee-photos/README.md`,
+      `[onda-9b] integration tests skipped — fixture missing: ${FIXTURE_PATH}\n         vide tests/fixtures/employee-photos/README.md`,
     );
     return;
   }

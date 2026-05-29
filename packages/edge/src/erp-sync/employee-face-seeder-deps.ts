@@ -10,11 +10,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { embed as reidEmbed } from "../discovery/image-probe/reid-client.js";
 import { faceRecordsRepo, personsRepo } from "../persistence/repositories/index.js";
-import type {
-  EmbedFaceResult,
-  FetchResult,
-  SeederDeps,
-} from "./employee-face-seeder.js";
+import type { EmbedFaceResult, FetchResult, SeederDeps } from "./employee-face-seeder.js";
 
 /** Classifica erro do fetch global pra mapear no FetchResult.error.
  * Exportada pra unit-testabilidade. */
@@ -35,15 +31,16 @@ export function classifyFetchError(err: Error & { name?: string; code?: string }
  * Fetch real da foto via global fetch + AbortSignal.timeout. Defensive
  * timeout (10s default) — ERP web app geralmente responde <500ms.
  */
-export async function fetchPhotoLive(absoluteUrl: string, timeoutMs = 10_000): Promise<FetchResult> {
+export async function fetchPhotoLive(
+  absoluteUrl: string,
+  timeoutMs = 10_000,
+): Promise<FetchResult> {
   let response: Response;
   try {
     response = await fetch(absoluteUrl, { signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     const { kind, detail } = classifyFetchError(err as Error & { name?: string; code?: string });
-    return detail !== undefined
-      ? { ok: false, error: kind, detail }
-      : { ok: false, error: kind };
+    return detail !== undefined ? { ok: false, error: kind, detail } : { ok: false, error: kind };
   }
   if (!response.ok) {
     return { ok: false, statusCode: response.status };
@@ -68,7 +65,12 @@ export async function embedFaceLive(
   // path "frame_fallback" documentado em packages/reid/src/main.py:137.
   // Validado pelo integration test §6.3 cenário 2 (early-warning se sidecar
   // v2+ endurecer guard).
-  const result = await reidEmbed(reidBaseUrl, jpegBuf, { x: 0, y: 0, w: 99_999, h: 99_999 }, timeoutMs);
+  const result = await reidEmbed(
+    reidBaseUrl,
+    jpegBuf,
+    { x: 0, y: 0, w: 99_999, h: 99_999 },
+    timeoutMs,
+  );
   return result;
 }
 

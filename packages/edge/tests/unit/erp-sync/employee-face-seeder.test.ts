@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { Person } from "../../../src/persistence/schema/persons.js";
 import {
+  type SeederDeps,
   isPlaceholder,
   sanitizeToken,
   seedEmployeeFace,
-  type SeederDeps,
 } from "../../../src/erp-sync/employee-face-seeder.js";
+import type { Person } from "../../../src/persistence/schema/persons.js";
 
 describe("isPlaceholder", () => {
   test("true para padrao.png / padrao_masc.jpg / padrao_fem.jpg", () => {
@@ -139,7 +139,9 @@ describe("seedEmployeeFace SeedResult scenarios", () => {
     // biome-ignore lint/style/noNonNullAssertion: asserted above
     expect(updatedPerson!.patch.last_embedded_image_token).toBe("avatar_1966.jpg?p8yr");
     // biome-ignore lint/style/noNonNullAssertion: asserted above
-    expect(updatedPerson!.patch.thumbnail_path).toContain("employee_seed/999_avatar_1966.jpg_p8yr.jpg");
+    expect(updatedPerson!.patch.thumbnail_path).toContain(
+      "employee_seed/999_avatar_1966.jpg_p8yr.jpg",
+    );
   });
 
   test("fetch 404 → {status:'fetch_failed', reason:'http_4xx'}", async () => {

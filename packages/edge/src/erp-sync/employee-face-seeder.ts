@@ -149,10 +149,7 @@ export async function seedEmployeeFace(
   } catch (err) {
     const e = err as Error & { status?: number };
     if (e.status === 422) {
-      logger.warn(
-        { erp_employee_id: person.erp_employee_id },
-        "sidecar /embed: no face detected",
-      );
+      logger.warn({ erp_employee_id: person.erp_employee_id }, "sidecar /embed: no face detected");
       return { status: "no_face" };
     }
     const reason: "5xx" | "timeout" | "network" =

@@ -2,8 +2,8 @@ import { getEnv } from "../config/env.js";
 import { logger } from "../obs/logger.js";
 import { erpRepo, personsRepo } from "../persistence/repositories/index.js";
 import type { NewErpEmployee } from "../persistence/schema/erp-cache.js";
-import { seedEmployeeFace } from "./employee-face-seeder.js";
 import { makeProductionDeps } from "./employee-face-seeder-deps.js";
+import { seedEmployeeFace } from "./employee-face-seeder.js";
 import { fetchErpEmployees } from "./queries.js";
 
 /** Resultado base do sync — usado por clients.ts (sem fields novos da Onda 9-B). */

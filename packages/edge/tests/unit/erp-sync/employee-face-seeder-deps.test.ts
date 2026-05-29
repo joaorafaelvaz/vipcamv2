@@ -21,7 +21,10 @@ describe("classifyFetchError", () => {
 
   test("default → network c/ detail", () => {
     const err = new Error("ECONNREFUSED 127.0.0.1:80");
-    expect(classifyFetchError(err)).toEqual({ kind: "network", detail: "ECONNREFUSED 127.0.0.1:80" });
+    expect(classifyFetchError(err)).toEqual({
+      kind: "network",
+      detail: "ECONNREFUSED 127.0.0.1:80",
+    });
   });
 });
 
