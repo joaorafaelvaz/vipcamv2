@@ -83,7 +83,7 @@ Onde `token` é o cache-buster do ERP (ex: `p8yr`). Path completo persistido em 
 
 **Verificado:** próxima migration é `0009` (`0008_bizarre_randall.sql` é o último — Onda 9-A).
 
-`packages/edge/src/persistence/migrations/0009_*.sql` (auto-gen via `drizzle-kit generate`):
+`packages/edge/src/persistence/migrations/0009_<adj>_<noun>.sql` (auto-gen via `drizzle-kit generate` — drizzle-kit anexa um sufixo aleatório do dicionário interno, tipo `0008_bizarre_randall.sql` da Onda 9-A; nome literal só é conhecido após o comando rodar):
 
 ```sql
 ALTER TABLE "persons" ADD COLUMN "last_embedded_image_token" text;
@@ -104,9 +104,9 @@ Forward-only deploy:
 
 | Arquivo | Tipo | Responsabilidade |
 |---|---|---|
-| `packages/edge/src/erp-sync/employees.ts` | modify | Após `personsRepo.create/update`, chama `seedEmployeeFace(person, imagem)`. Falhas do seeder NÃO interrompem o loop (try/catch per-employee, log + continue). |
-| `packages/edge/src/erp-sync/employee-face-seeder.ts` | new | `seedEmployeeFace(person, imagem): Promise<SeedResult>` orquestra: skip-checks → fetch foto → reid `embed` com **oversize bbox** (vide §5) → decode crop → save snapshot → persist face_record + update Person.last_embedded_image_token. Deps injetadas (fetcher, reidClient, repos, fs) p/ testabilidade. Retorna union type discriminado. |
-| `packages/edge/src/erp-sync/employee-face-seeder.ts` | (mesmo file) | `isPlaceholder(imagem: string): boolean` predicate puro. Set `{"padrao.png", "padrao_masc.jpg", "padrao_fem.jpg"}`. |
+| `packages/edge/src/erp-sync/employees.ts` | modify | Após `personsRepo.create/update`, chama `seedEmployeeFace(person, photoUrl)`. Falhas do seeder NÃO interrompem o loop (try/catch per-employee, log + continue). |
+| `packages/edge/src/erp-sync/employee-face-seeder.ts` | new | `seedEmployeeFace(person, photoUrl: string): Promise<SeedResult>` orquestra: skip-checks → fetch foto → reid `embed` com **oversize bbox** (vide §5) → decode crop → save snapshot → persist face_record + update Person.last_embedded_image_token. Deps injetadas (fetcher, reidClient, repos, fs) p/ testabilidade. Retorna union type discriminado. **Note:** parâmetro `photoUrl` recebe o valor literal de `usuarios.imagem` aliasado como `photo_url` pela query do `ERP_QUERY_EMPLOYEES` (vide `ErpEmployeeRow` em `erp-sync/queries.ts`). Não é uma URL completa — é o token (ex: `avatar_1966.jpg?p8yr`) que o seeder concatena com `ERP_PHOTO_URL_PREFIX` antes do fetch. Nome do param reflete o shape consumido (`row.photo_url`) e não o nome da coluna MySQL. |
+| `packages/edge/src/erp-sync/employee-face-seeder.ts` | (mesmo file) | `isPlaceholder(photoUrl: string): boolean` predicate puro. Set `{"padrao.png", "padrao_masc.jpg", "padrao_fem.jpg"}`. |
 | `packages/edge/src/discovery/image-probe/reid-client.ts` | reuse as-is | Função `embed(...)` existente serve — chamada do seeder passa bbox oversize p/ triggerar frame_fallback no sidecar (vide §5). Nenhuma mudança aqui. |
 | `packages/edge/src/persistence/schema/persons.ts` | modify | + `last_embedded_image_token` (col text nullable) |
 | `packages/edge/src/persistence/schema/face-records.ts` | modify | + `source` (col text NOT NULL default `'live_detection'`) |
@@ -162,13 +162,13 @@ Hourly scheduler tick
               1. erpRepo.upsertEmployee(row)
               2. person = personsRepo.create OR update
               3. result = await seedEmployeeFace(person, row.photo_url)        [NEW]
-                   ├─ if isPlaceholder(imagem):           return {status:"placeholder"}
+                   ├─ if isPlaceholder(photoUrl):           return {status:"placeholder"}
                    ├─ existingCount = await faceRecordsRepo.countByPerson(person.id)
-                   ├─ if person.last_embedded_image_token === imagem
+                   ├─ if person.last_embedded_image_token === photoUrl
                    │   AND existingCount > 0:             return {status:"unchanged"}
-                   ├─ photoUrl = `${ERP_PHOTO_URL_PREFIX}${imagem}`
+                   ├─ absoluteUrl = `${ERP_PHOTO_URL_PREFIX}${photoUrl}`
                    ├─ try {
-                   │    response = await fetch(photoUrl, {signal: AbortSignal.timeout(10_000)})
+                   │    response = await fetch(absoluteUrl, {signal: AbortSignal.timeout(10_000)})
                    │  } catch (err):
                    │    classify err → {timeout|dns|network} → log warn + return {status:"fetch_failed", reason}
                    ├─ if !response.ok:
@@ -180,7 +180,9 @@ Hourly scheduler tick
                    │    if err.status === 422:           return {status:"no_face"}
                    │    classify → {timeout|5xx|network} → log error + return {status:"sidecar_error", reason}
                    ├─ // snapshot persistence — decode crop_jpeg_b64 + save
-                   │  snapshotPath = `employee_seed/${person.erp_employee_id}_${tokenFromImage(imagem)}.jpg`
+                   │  // token = parte do photoUrl que serve de version (ex: "avatar_1966.jpg?p8yr"
+                   │  // → sanitize p/ filesystem-safe: "avatar_1966.jpg_p8yr" via replace `?` → `_`)
+                   │  snapshotPath = `employee_seed/${person.erp_employee_id}_${sanitizeToken(photoUrl)}.jpg`
                    │  absPath = path.join(SNAPSHOTS_DIR, snapshotPath)
                    │  await mkdir(dirname(absPath), {recursive: true})
                    │  await writeFile(absPath, Buffer.from(embedResult.crop_jpeg_b64, "base64"))
@@ -198,8 +200,8 @@ Hourly scheduler tick
                    │  } catch (PostgresFKError):              // Person sumiu entre create + insertAndEvict
                    │    log warn + return {status:"sidecar_error", reason:"network", detail:"person_fk_violation"}
                    ├─ await personsRepo.update(person.id, {
-                   │    last_embedded_image_token: imagem,
-                   │    thumbnail_path: thumbnailPath ?? snapshotPath,
+                   │    last_embedded_image_token: photoUrl,
+                   │    thumbnail_path: snapshotPath,    // verificado: persons.thumbnail_path é text nullable
                    │  })
                    └─ return {status:"embedded", face_record_id: fr.id}
               4. log per-employee outcome (structured): {erp_employee_id, person_id, ...result, duration_ms}
@@ -234,14 +236,6 @@ Scheduler único (ver `packages/edge/src/erp-sync/scheduler.ts` da Onda 2), sem 
 ### 5.5 Throughput
 
 371 employees × ~250ms (fetch ~80ms + frame_fallback embed ~150ms + persist ~20ms) ≈ 1.5 min na primeira rodada (otimista). Pior caso (sidecar cold, fetch lento): ~10 min. Após estabilizar, só os que mudaram desde o último sync (esperado: 0-3 por hora). Otimização futura: paralelizar via `Promise.allSettled` em chunks de 5 — fácil de adicionar depois se ficar gargalo.
-
-### 5.3 Concorrência
-
-Scheduler único (ver `packages/edge/src/erp-sync/scheduler.ts` da Onda 2), sem 2 syncs simultâneos. `insertAndEvict` é atômica (Drizzle transaction). Nada novo de lock necessário.
-
-### 5.4 Throughput
-
-371 employees × ~1-2s cada (fetch + embed serial) ≈ 6-12 min total na primeira rodada. Após estabilizar, só os que mudaram desde o último sync (esperado: 0-3 por hora). Otimização futura: paralelizar via `Promise.allSettled` em chunks de 5 — fácil de adicionar depois se ficar gargalo.
 
 ## 6. Testing
 
@@ -278,9 +272,9 @@ Scheduler único (ver `packages/edge/src/erp-sync/scheduler.ts` da Onda 2), sem 
    - Cleanup: remove snapshot file + face_record + person
 
 2. **Frame_fallback dependency contract validation:**
-   - **Críticol** — garante que sidecar continua aceitando bbox oversize e cai no fallback
-   - Mesma estrutura do teste 1, mas asserta também `embedResult.source === 'frame_fallback'` (se exposto) OU pelo menos que o embed sucede com bbox `(0,0,99999,99999)`
-   - Se este teste falhar, é signal explícito de que o sidecar v2+ endureceu o guard — flag pra reabrir Onda 9-B com option B (`/embed_image`)
+   - **Crítico** — garante que sidecar continua aceitando bbox oversize e cai no fallback
+   - Mesma estrutura do teste 1, mas asserta também `embedResult.source === 'frame_fallback'` quando o campo está presente (`EmbedResult.source` é opcional em `packages/shared/src/types/reid.ts`; defensive check: `if (embedResult.source !== undefined) expect(embedResult.source).toBe('frame_fallback')`). Mesmo sem o campo, sucesso do embed com bbox `(0,0,99999,99999)` já é evidência forte
+   - Se este teste falhar, é signal explícito de que o sidecar v2+ endureceu o guard — flag pra reabrir Onda 9-B com option B (`/embed_image`, vide §10 item #9)
 
 (Requer vipcam_test DB do chip da Onda 9-A débito — se ainda não provisionado, fica marcado DB-deferred até lá.)
 
