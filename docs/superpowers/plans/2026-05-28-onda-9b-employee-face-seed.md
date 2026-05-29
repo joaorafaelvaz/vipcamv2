@@ -93,7 +93,7 @@ Expected: 2 fails (columns undefined).
 
 - [ ] **Step 3: Add columns to Drizzle schemas**
 
-Em `packages/edge/src/persistence/schema/persons.ts`, dentro do `pgTable("persons", { ... })`, adicionar após o último campo existente (provavelmente `metadata`):
+Em `packages/edge/src/persistence/schema/persons.ts`, dentro do `pgTable("persons", { ... })`, adicionar antes do fechamento `}` do objeto de colunas (campos finais do arquivo atual são `metadata`/`created_at`/`updated_at` — posição não importa pra Drizzle):
 ```typescript
 // Onda 9-B: cache-buster do ERP (ex: "avatar_1966.jpg?p8yr") da última
 // foto seedada via /embed do sidecar. NULL = nunca tentou seedar.
@@ -216,7 +216,9 @@ O seeder (Task 5) precisa `countByPerson(person_id) > 0` pra decidir "skip via t
 
 - [ ] **Step 1: Failing integration test (DB-deferred)**
 
-`packages/edge/tests/integration/persistence/face-records-repo.test.ts` — adicionar ao `describe` existente (ou criar arquivo se não-existir):
+> **Nota:** dois arquivos similares existem no diretório (`face-records-repo.test.ts` e `face-records.repo.test.ts` — diferença histórica). Adicionar ao **`face-records.repo.test.ts`** (matching repo file naming convention `*.repo.test.ts`).
+
+`packages/edge/tests/integration/persistence/face-records.repo.test.ts` — adicionar ao `describe` existente:
 ```typescript
 test("countByPerson retorna 0 quando vazio, N quando inseridos", async () => {
   const p = await personsRepo.create({ display_name: "test cnt", person_type: "anonymous" });
@@ -248,8 +250,15 @@ test("countByPerson retorna 0 quando vazio, N quando inseridos", async () => {
 
 - [ ] **Step 2: Run test (DB-deferred — fail/skip locally)**
 
-`bash packages/edge/scripts/run-integration-tests.sh tests/integration/persistence/face-records-repo.test.ts`
-Sem Postgres local, falha com `DATABASE_URL not set` — DB-deferred, OK. Se DB disponível, esperado: fail c/ "countByPerson is not a function".
+```bash
+cd packages/edge
+DATABASE_URL=postgres://vipcam:senha@127.0.0.1:5432/vipcam_test \
+  bun test tests/integration/persistence/face-records.repo.test.ts
+```
+
+> **Nota:** `scripts/run-integration-tests.sh` ignora argumentos posicionais e roda TODOS os arquivos de integration — usar `bun test <file>` direto pra rodar só este. `_helpers.ts:assertSafeTestDb()` ainda valida o DB name in-test.
+
+Sem DB local: `bun test` skipa o describe (assertSafeTestDb throw é capturado por test framework como fail). DB-deferred, OK. Se DB disponível: esperado fail c/ "countByPerson is not a function".
 
 - [ ] **Step 3: Implement countByPerson**
 
@@ -273,7 +282,12 @@ Imports necessários: `sql` já está no topo do arquivo (linha 1: `import { and
 
 - [ ] **Step 4: Run test (pass — DB-available) OR DB-deferred**
 
-`bash packages/edge/scripts/run-integration-tests.sh tests/integration/persistence/face-records-repo.test.ts` → 1 PASS (se DB) ou DB-deferred.
+```bash
+cd packages/edge
+DATABASE_URL=postgres://vipcam:senha@127.0.0.1:5432/vipcam_test \
+  bun test tests/integration/persistence/face-records.repo.test.ts
+```
+→ 1 PASS (se DB) ou DB-deferred.
 
 - [ ] **Step 5: Run typecheck**
 
@@ -429,9 +443,9 @@ git commit -m "feat(edge): Onda 9-B — isPlaceholder + sanitizeToken helpers"
 
 Esta é a tarefa "meatiest" do plano. Implementa a função principal com toda a logic decidida no spec, com mocks injetados pra cada dep (fetcher, reidClient, repos, fs). Cada cenário do SeedResult vira 1 unit test.
 
-- [ ] **Step 1: Failing tests (6 SeedResult scenarios)**
+- [ ] **Step 1: Failing tests (9 SeedResult scenarios)**
 
-Adicionar ao `packages/edge/tests/unit/erp-sync/employee-face-seeder.test.ts` (depois dos blocos `describe` de Task 4):
+Adicionar ao `packages/edge/tests/unit/erp-sync/employee-face-seeder.test.ts` (depois dos blocos `describe` de Task 4). Cobrem todas as 6 variantes do `SeedResult` union + 3 sub-cases (unchanged-but-count-0, fetch_failed-network-vs-http, sidecar 422-vs-5xx-vs-FK):
 
 ```typescript
 import type { Person } from "../../../src/persistence/schema/persons.js";
@@ -441,6 +455,8 @@ import {
 } from "../../../src/erp-sync/employee-face-seeder.js";
 
 // Person fixture mínimo — só os campos que o seeder lê
+// NOTA: campo `last_embedded_image_token` depende de Chunk 1 ter aplicado
+// migration 0009. Type Person é re-exported após Chunk 1 merge.
 function makePerson(overrides?: Partial<Person>): Person {
   return {
     id: "11111111-1111-1111-1111-111111111111",
@@ -666,7 +682,9 @@ export interface SeederDeps {
  * person.last_embedded_image_token + countFaceRecords(person.id) > 0 check.
  *
  * Retorna SeedResult discriminado — caller (syncEmployees) faz aggregate
- * + log estruturado. NUNCA throw: erros viram variantes do union.
+ * + log estruturado. Erros esperados (placeholder, fetch failure, sidecar
+ * 422/5xx, FK violation 23503) viram variantes do union; erros inesperados
+ * (ex: insert error não-23503, bug interno) propagam pra caller catch.
  */
 export async function seedEmployeeFace(
   person: Person,
@@ -780,9 +798,9 @@ export async function seedEmployeeFace(
 
 > **Verificar antes do commit:** types específicos do projeto — `Person` é exportado de `../persistence/schema/persons.js`? Confirmar via `grep "export type Person" packages/edge/src/persistence/schema/persons.ts`. Se for `import type { Person }`, OK; se for inferido (`typeof persons.$inferSelect`), criar local alias.
 
-- [ ] **Step 4: Run tests (pass — 8 SeedResult cenários)**
+- [ ] **Step 4: Run tests (pass — 9 SeedResult cenários)**
 
-`cd packages/edge && bun test tests/unit/erp-sync/employee-face-seeder.test.ts` → 14 PASS (6 do Task 4 + 8 SeedResult).
+`cd packages/edge && bun test tests/unit/erp-sync/employee-face-seeder.test.ts` → 15 PASS (6 do Task 4 + 9 SeedResult).
 
 - [ ] **Step 5: Run typecheck**
 
@@ -1314,6 +1332,8 @@ ls -la packages/edge/tests/fixtures/employee-photos/test-face.jpg
 # Expected: file existe, size razoável (50-200KB)
 ```
 
+> **Provenance traceability:** se opção (c) — capturar da câmera DH-IPC — criar `packages/edge/tests/fixtures/employee-photos/README.md` documentando origem do JPEG (data, câmera, motivo) + qualquer concern de PII. Se opção (a/b), citar URL/source no README. Permite future reviewer entender licença/PII sem precisar git-blame o binary.
+
 - [ ] **Step 2: Write integration test**
 
 `packages/edge/tests/integration/erp-sync/employee-face-seeder-integration.test.ts`:
@@ -1419,9 +1439,16 @@ describe("seedEmployeeFace end-to-end (DB + sidecar real)", () => {
 
 - [ ] **Step 3: Run integration test (DB-deferred OR PASS)**
 
-`bash packages/edge/scripts/run-integration-tests.sh tests/integration/erp-sync/employee-face-seeder-integration.test.ts`
-- Sem DB local: DB-deferred (esperado neste dev — rodará no VPS pós-deploy)
-- Com DB + sidecar: 2 PASS
+```bash
+cd packages/edge
+DATABASE_URL=postgres://vipcam:senha@127.0.0.1:5432/vipcam_test \
+  bun test tests/integration/erp-sync/employee-face-seeder-integration.test.ts
+```
+
+> **Nota:** `scripts/run-integration-tests.sh` ignora positional args e roda TODOS os arquivos de integration — usar `bun test <file>` direto pra rodar só este. `assertSafeTestDb()` in-test valida o nome do DB de qualquer forma.
+
+- Sem DB local: skipa (esperado neste dev — rodará no VPS pós-deploy)
+- Com DB + sidecar reachable: 2 PASS
 
 - [ ] **Step 4: Commit**
 
@@ -1507,7 +1534,7 @@ sudo -u vipcam psql "$(sudo grep '^DATABASE_URL=' /etc/vipcam/edge.env | cut -d=
 sudo -u vipcam psql "$(sudo grep '^DATABASE_URL=' /etc/vipcam/edge.env | cut -d= -f2-)" -c "
 SELECT
   COUNT(*) AS employees_total,
-  COUNT(p.id) FILTER (WHERE fr.id IS NOT NULL) AS with_face,
+  COUNT(DISTINCT p.id) FILTER (WHERE fr.id IS NOT NULL) AS with_face,
   COUNT(*) FILTER (WHERE p.last_embedded_image_token IS NULL) AS never_attempted
 FROM persons p
 LEFT JOIN face_records fr ON fr.person_id = p.id AND fr.source = 'erp_seed'
@@ -1540,7 +1567,7 @@ Per spec §9, monitorar via SQL semanalmente:
 -- Coverage de employees com face_records
 SELECT
   COUNT(*) AS employees_total,
-  COUNT(p.id) FILTER (WHERE fr.id IS NOT NULL) AS with_face,
+  COUNT(DISTINCT p.id) FILTER (WHERE fr.id IS NOT NULL) AS with_face,
   ROUND(100.0 * COUNT(p.id) FILTER (WHERE fr.id IS NOT NULL) / COUNT(*), 1) AS pct_with_face
 FROM persons p
 LEFT JOIN face_records fr ON fr.person_id = p.id AND fr.source = 'erp_seed'
