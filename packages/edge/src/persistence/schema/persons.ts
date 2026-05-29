@@ -30,6 +30,10 @@ export const persons = pgTable(
     thumbnail_path: text("thumbnail_path"),
     notes: text("notes"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'`),
+    // Onda 9-B: cache-buster do ERP (ex: "avatar_1966.jpg?p8yr") da última
+    // foto seedada via /embed do sidecar. NULL = nunca tentou seedar.
+    // String equality contra usuarios.imagem decide skip no próximo sync.
+    last_embedded_image_token: text("last_embedded_image_token"),
     created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

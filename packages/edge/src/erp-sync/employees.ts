@@ -1,13 +1,31 @@
+import { getEnv } from "../config/env.js";
 import { logger } from "../obs/logger.js";
 import { erpRepo, personsRepo } from "../persistence/repositories/index.js";
 import type { NewErpEmployee } from "../persistence/schema/erp-cache.js";
+import { makeProductionDeps } from "./employee-face-seeder-deps.js";
+import { seedEmployeeFace } from "./employee-face-seeder.js";
 import { fetchErpEmployees } from "./queries.js";
 
+/** Resultado base do sync — usado por clients.ts (sem fields novos da Onda 9-B). */
 export interface SyncResult {
   fetched: number;
   created: number;
   updated: number;
   skipped: number;
+}
+
+/** Resultado do sync de employees — extends SyncResult com counters do seeder
+ * (Onda 9-B). syncEmployees retorna esta forma; syncClients continua retornando
+ * SyncResult plain. */
+export interface EmployeeSyncResult extends SyncResult {
+  // Onda 9-B: per-employee seeder outcomes
+  embedded: number;
+  skipped_placeholder: number;
+  skipped_unchanged: number;
+  fetch_failed: number;
+  no_face: number;
+  sidecar_error: number;
+  seeder_unexpected_error: number;
 }
 
 /**
@@ -18,22 +36,33 @@ export interface SyncResult {
  *  - se mudou (name/is_active): atualiza ambos
  *  - se igual: skip
  *
- * Idempotente: rodar 2x sem mudanças no ERP retorna { created: 0, updated: 0 }.
+ * Onda 9-B: após cada create/update, chama seedEmployeeFace pra baixar
+ * foto do ERP, embeddar via sidecar, e popular face_records. Falhas do
+ * seeder NÃO interrompem o loop — contadas no SyncResult pra observability.
  *
- * ⚠ Pós-Discovery 2026-05-11: NÃO faz upload pra Face DB câmera (P3 refutada).
- * Reconhecimento facial automático de funcionários só vem na Onda 3
- * (failover B com InsightFace local + pgvector ANN match).
+ * Idempotente: rodar 2x sem mudanças no ERP retorna { created: 0, updated: 0 }
+ * e o seeder skipa via persons.last_embedded_image_token.
  */
-export async function syncEmployees(): Promise<SyncResult> {
+export async function syncEmployees(): Promise<EmployeeSyncResult> {
   const rows = await fetchErpEmployees();
+  const env = getEnv();
+  const deps = makeProductionDeps(env);
   let created = 0;
   let updated = 0;
   let skipped = 0;
+  let embedded = 0;
+  let skipped_placeholder = 0;
+  let skipped_unchanged = 0;
+  let fetch_failed = 0;
+  let no_face = 0;
+  let sidecar_error = 0;
+  let seeder_unexpected_error = 0;
 
   for (const row of rows) {
     const erpId = String(row.id);
     const isActive = Boolean(row.is_active);
     const existing = await erpRepo.findEmployeeByErpId(erpId);
+    let person: Awaited<ReturnType<typeof personsRepo.findByErpEmployeeId>> = null;
 
     if (!existing) {
       // Cache local — usa exactOptionalPropertyTypes-safe construction
@@ -50,7 +79,7 @@ export async function syncEmployees(): Promise<SyncResult> {
       await erpRepo.upsertEmployee(newRow);
 
       // Person vinculada
-      await personsRepo.create({
+      person = await personsRepo.create({
         person_type: "employee",
         display_name: row.name,
         erp_employee_id: erpId,
@@ -79,16 +108,62 @@ export async function syncEmployees(): Promise<SyncResult> {
         // Person.display_name segue erp_employees.name. Outras colunas de Person
         // (display_name) só atualizam quando name muda — evita UPDATE no-op.
         if (nameChanged) {
-          const person = await personsRepo.findByErpEmployeeId(erpId);
-          if (person) await personsRepo.update(person.id, { display_name: row.name });
+          const p = await personsRepo.findByErpEmployeeId(erpId);
+          if (p) await personsRepo.update(p.id, { display_name: row.name });
         }
         updated += 1;
       } else {
         skipped += 1;
       }
+      // Onda 9-B: captura person p/ seeder (caminho update não criava
+      // referência local antes — agora precisa pra passar pra seedEmployeeFace).
+      person = await personsRepo.findByErpEmployeeId(erpId);
+    }
+
+    // Onda 9-B: seed face — falhas NÃO interrompem o loop, viram counters
+    if (person && row.photo_url !== undefined) {
+      try {
+        const result = await seedEmployeeFace(person, row.photo_url, deps);
+        switch (result.status) {
+          case "embedded":
+            embedded += 1;
+            break;
+          case "placeholder":
+            skipped_placeholder += 1;
+            break;
+          case "unchanged":
+            skipped_unchanged += 1;
+            break;
+          case "fetch_failed":
+            fetch_failed += 1;
+            break;
+          case "no_face":
+            no_face += 1;
+            break;
+          case "sidecar_error":
+            sidecar_error += 1;
+            break;
+        }
+      } catch (err) {
+        seeder_unexpected_error += 1;
+        logger.error({ erp_employee_id: erpId, err }, "seedEmployeeFace unexpected error");
+      }
     }
   }
 
-  logger.info({ fetched: rows.length, created, updated, skipped }, "employee sync complete");
-  return { fetched: rows.length, created, updated, skipped };
+  const result: EmployeeSyncResult = {
+    fetched: rows.length,
+    created,
+    updated,
+    skipped,
+    embedded,
+    skipped_placeholder,
+    skipped_unchanged,
+    fetch_failed,
+    no_face,
+    sidecar_error,
+    seeder_unexpected_error,
+  };
+  logger.info(result, "employee sync complete");
+  return result;
 }

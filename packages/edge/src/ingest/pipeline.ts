@@ -183,6 +183,7 @@ export async function processEvent(
         model_name: reidOut.embedding.model_name,
         model_revision: reidOut.embedding.model_revision,
         is_primary: reidOut.status === "new_person",
+        source: "live_detection",
       });
     }
 
