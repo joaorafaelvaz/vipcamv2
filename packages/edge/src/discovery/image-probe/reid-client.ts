@@ -1,6 +1,18 @@
 import type { DetectResult, EmbedResult, ReidBBox } from "@vipcam/shared";
 
-export class ReidError extends Error {}
+export class ReidError extends Error {
+  /** HTTP status do sidecar quando o erro é uma resposta non-2xx. Ausente
+   * (undefined) em falhas de rede/timeout. Callers bifurcam nele: 422 →
+   * no_face, 5xx → sidecar_error (vide employee-face-seeder). */
+  readonly status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "ReidError";
+    // exactOptionalPropertyTypes: só atribui quando há valor, deixando a
+    // prop genuinamente ausente em falhas de rede (sem status HTTP).
+    if (status !== undefined) this.status = status;
+  }
+}
 
 /** POST a imagem como multipart pro reid /detect. timeout generoso por
  *  default: a 1ª chamada dispara o InsightFace prepare() (cold start). */
@@ -27,7 +39,7 @@ export async function detect(
   } catch (err) {
     throw new ReidError(`reid /detect request failed: ${(err as Error).message}`);
   }
-  if (!r.ok) throw new ReidError(`reid /detect HTTP ${r.status}`);
+  if (!r.ok) throw new ReidError(`reid /detect HTTP ${r.status}`, r.status);
   return (await r.json()) as DetectResult;
 }
 
@@ -61,6 +73,6 @@ export async function embed(
   } catch (err) {
     throw new ReidError(`reid /embed request failed: ${(err as Error).message}`);
   }
-  if (!r.ok) throw new ReidError(`reid /embed HTTP ${r.status}`);
+  if (!r.ok) throw new ReidError(`reid /embed HTTP ${r.status}`, r.status);
   return (await r.json()) as EmbedResult;
 }

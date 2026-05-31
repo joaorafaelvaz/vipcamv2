@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ReidError } from "../../../src/discovery/image-probe/reid-client.js";
 import {
   type SeederDeps,
   isPlaceholder,
@@ -164,12 +165,14 @@ describe("seedEmployeeFace SeedResult scenarios", () => {
     expect(result).toEqual({ status: "fetch_failed", reason: "timeout" });
   });
 
+  // NOTA: throw de ReidError REAL (não Error hand-rolled) — o reid-client
+  // popula err.status só desde o fix Onda 9-B. Antes disso o seeder caía no
+  // bucket "network" e classificava 422 como sidecar_error (falso alarme
+  // observado em produção 2026-05-31: sidecar_error:10 que eram no_face).
   test("sidecar 422 (no face) → {status:'no_face'}", async () => {
     const deps = makeDeps({
       embedFace: async () => {
-        const err = new Error("reid /embed HTTP 422") as Error & { status?: number };
-        err.status = 422;
-        throw err;
+        throw new ReidError("reid /embed HTTP 422", 422);
       },
     });
     const result = await seedEmployeeFace(makePerson(), "avatar_999.jpg?abcd", deps);
@@ -179,9 +182,7 @@ describe("seedEmployeeFace SeedResult scenarios", () => {
   test("sidecar 5xx → {status:'sidecar_error', reason:'5xx'}", async () => {
     const deps = makeDeps({
       embedFace: async () => {
-        const err = new Error("reid /embed HTTP 503") as Error & { status?: number };
-        err.status = 503;
-        throw err;
+        throw new ReidError("reid /embed HTTP 503", 503);
       },
     });
     const result = await seedEmployeeFace(makePerson(), "avatar_999.jpg?abcd", deps);

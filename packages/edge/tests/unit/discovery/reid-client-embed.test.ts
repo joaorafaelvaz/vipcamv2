@@ -46,22 +46,37 @@ describe("reid-client.embed", () => {
     expect(fd.get("file")).toBeInstanceOf(Blob);
   });
 
-  test("throws ReidError on HTTP non-2xx", async () => {
-    globalThis.fetch = mock(
-      async () => new Response('{"detail":"bad bbox"}', { status: 400 }),
-    ) as unknown as typeof globalThis.fetch;
-    await expect(
-      embed("http://127.0.0.1:5005", Buffer.from("x"), { x: 0, y: 0, w: 1, h: 1 }),
-    ).rejects.toThrow(ReidError);
+  test("throws ReidError on HTTP non-2xx, carrying .status (caller mapeia 422→no_face, 5xx→sidecar_error)", async () => {
+    // Regressão Onda 9-B: o seeder lê err.status pra bifurcar 422 (no_face)
+    // vs 5xx (sidecar_error). Se ReidError não carregar status, todo erro
+    // HTTP cai no bucket "network" → 422 vira sidecar_error (falso alarme).
+    for (const status of [400, 422, 503]) {
+      globalThis.fetch = mock(
+        async () => new Response('{"detail":"x"}', { status }),
+      ) as unknown as typeof globalThis.fetch;
+      const err = await embed("http://127.0.0.1:5005", Buffer.from("x"), {
+        x: 0,
+        y: 0,
+        w: 1,
+        h: 1,
+      }).catch((e) => e);
+      expect(err).toBeInstanceOf(ReidError);
+      expect((err as ReidError).status).toBe(status);
+    }
   });
 
-  test("throws ReidError on fetch failure (network/timeout)", async () => {
+  test("throws ReidError on fetch failure (network/timeout) — sem .status", async () => {
     globalThis.fetch = mock(async () => {
       throw new Error("ECONNREFUSED");
     }) as unknown as typeof globalThis.fetch;
-    await expect(
-      embed("http://127.0.0.1:5005", Buffer.from("x"), { x: 0, y: 0, w: 1, h: 1 }),
-    ).rejects.toThrow(ReidError);
+    const err = await embed("http://127.0.0.1:5005", Buffer.from("x"), {
+      x: 0,
+      y: 0,
+      w: 1,
+      h: 1,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ReidError);
+    expect((err as ReidError).status).toBeUndefined();
   });
 
   test("attaches AbortSignal.timeout() by default", async () => {
