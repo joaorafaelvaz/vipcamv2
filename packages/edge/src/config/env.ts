@@ -49,9 +49,10 @@ const envSchema = z
     ERP_CHECKINS_INITIAL_LOOKBACK_HOURS: z.coerce.number().int().positive().default(24),
     // Onda 9-B: prefixo HTTPS público das fotos do ERP. O seeder concatena
     // com `usuarios.imagem` (ex: "avatar_1966.jpg?p8yr") pra montar a URL
-    // absoluta antes de fetch. Override em produção via /etc/vipcam/edge.env
-    // se a barbearia muda o domínio do ERP web app.
-    ERP_PHOTO_URL_PREFIX: z.string().url().default("https://www.franquiabv.com.br/img/usuarios/"),
+    // absoluta antes de fetch. Path confirmado via /api/v2/agendas/getUnidade
+    // (campo imagem_url) probe 2026-05-31: host SEM www, path /layout/img/avatar/.
+    // Override em produção via /etc/vipcam/edge.env se o ERP mudar o domínio.
+    ERP_PHOTO_URL_PREFIX: z.string().url().default("https://franquiabv.com.br/layout/img/avatar/"),
     // Onda 5: timezone p/ buckets de dia/hora das métricas. Timestamps são
     // timestamptz (UTC); a barbearia é local — sem isso pico/fluxo deslocam ~3h.
     METRICS_TZ: z.string().min(1).default("America/Sao_Paulo"),

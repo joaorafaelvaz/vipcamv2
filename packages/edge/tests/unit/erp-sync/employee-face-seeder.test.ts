@@ -8,10 +8,14 @@ import {
 import type { Person } from "../../../src/persistence/schema/persons.js";
 
 describe("isPlaceholder", () => {
-  test("true para padrao.png / padrao_masc.jpg / padrao_fem.jpg", () => {
+  test("true para padrao.png / padrao_masc.jpg / padrao_fem.jpg / padrao_femi.jpg", () => {
     expect(isPlaceholder("padrao.png")).toBe(true);
     expect(isPlaceholder("padrao_masc.jpg")).toBe(true);
     expect(isPlaceholder("padrao_fem.jpg")).toBe(true);
+    // ERP produção usa "padrao_femi.jpg" (com "i") — confirmado via probe
+    // /api/v2/agendas/getUnidade 2026-05-31. Sem isso, placeholders femininos
+    // baixariam e embedariam um avatar genérico como rosto real.
+    expect(isPlaceholder("padrao_femi.jpg")).toBe(true);
   });
 
   test("false para foto real (avatar_<id>.jpg?<token>)", () => {

@@ -23,6 +23,10 @@ import type { Person } from "../persistence/schema/persons.js";
 const PLACEHOLDER_IMAGES: ReadonlySet<string> = new Set([
   "padrao.png",
   "padrao_masc.jpg",
+  // ERP usa "padrao_femi.jpg" (com "i") em produção — confirmado via
+  // /api/v2/agendas/getUnidade probe 2026-05-31. "padrao_fem.jpg" mantido
+  // como alias defensivo caso unidades antigas usem o nome curto.
+  "padrao_femi.jpg",
   "padrao_fem.jpg",
 ]);
 
