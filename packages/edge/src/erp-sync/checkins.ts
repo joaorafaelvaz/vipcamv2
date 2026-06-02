@@ -73,10 +73,7 @@ export async function pollCheckins(
       "checkins poll: rows sem cliente puladas",
     );
   }
-  logger.info(
-    { fetched: rows.length, new_, since: since.toISOString() },
-    "checkins poll complete",
-  );
+  logger.info({ fetched: rows.length, new_, since: since.toISOString() }, "checkins poll complete");
   return { fetched: rows.length, new_ };
 }
 
