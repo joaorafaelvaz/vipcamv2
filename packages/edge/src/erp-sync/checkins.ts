@@ -1,93 +1,79 @@
-import { sql } from "drizzle-orm";
 import { getEnv } from "../config/env.js";
 import { logger } from "../obs/logger.js";
-import { getDb } from "../persistence/db.js";
 import { erpRepo } from "../persistence/repositories/index.js";
-import { erpCheckins } from "../persistence/schema/erp-cache.js";
+import type { NewErpCheckin } from "../persistence/schema/erp-cache.js";
 import { fetchErpCheckinsSince } from "./queries.js";
 
-/**
- * Cursor in-memory: maior occurred_at já visto. Reconciliado no boot via
- * MAX(occurred_at) do cache local — sobrevive a restart do edge.
- *
- * **I5 (review 2026-05-13):** cursor avança APENAS depois do upsert ter
- * sucesso (ou se o row já existe localmente). Antes do fix, cursor avançava
- * antes do upsert — se upsert falhasse, cursor ultrapassava e o row era
- * perdido permanentemente (próxima query 'since cursor' não pegava de novo).
- *
- * Trade-off: se upsert falha consistentemente (DB down), cursor congela e
- * loop quente warna a cada rodada. Aceito vs. perder dados — operador vê
- * WARN e age.
- */
-let cursor: Date | null = null;
-
-async function getInitialCursor(): Promise<Date> {
-  const rows = await getDb()
-    .select({ max: sql<Date | null>`MAX(${erpCheckins.occurred_at})` })
-    .from(erpCheckins);
-  const stored = rows[0]?.max;
-  if (stored) return new Date(stored);
-  // Sem checkins ainda: lookback configurável via env (default 24h).
-  // I1 (review 2026-05-13): antes era hardcoded 1h, gap problemático em
-  // greenfield deploy se ERP tem histórico recente que vale ingerir.
-  const env = getEnv();
-  const lookbackMs = env.ERP_CHECKINS_INITIAL_LOOKBACK_HOURS * 3600_000;
-  const fallback = new Date(Date.now() - lookbackMs);
-  logger.warn(
-    {
-      lookback_hours: env.ERP_CHECKINS_INITIAL_LOOKBACK_HOURS,
-      fallback_cursor: fallback.toISOString(),
-    },
-    "erp_checkins cache vazio — usando lookback inicial (configurável via ERP_CHECKINS_INITIAL_LOOKBACK_HOURS)",
-  );
-  return fallback;
+/** Início da janela deslizante: now − lookbackHours. Pura (Onda 9-C). */
+export function computeSince(now: Date, lookbackHours: number): Date {
+  return new Date(now.getTime() - lookbackHours * 3_600_000);
 }
 
-export async function pollCheckins(): Promise<{ fetched: number; new_: number }> {
-  if (!cursor) cursor = await getInitialCursor();
-  const rows = await fetchErpCheckinsSince(cursor);
-  let new_ = 0;
-  let upsertFailures = 0;
+export interface PollCheckinsOptions {
+  /** Clock injetável (testes). Default: () => new Date(). */
+  now?: () => Date;
+}
 
+/**
+ * Onda 9-C — janela deslizante (substitui o cursor monotônico).
+ *
+ * `agendas.data` (horário do slot, usado como occurred_at) NÃO é monotônico com o
+ * instante em que `checkin` vira 1 (atrasados dão check-in p/ slot passado;
+ * adiantados, p/ slot futuro). Um cursor high-water-mark perderia esses
+ * permanentemente. Em vez disso, cada poll re-escaneia `data >= now − LOOKBACK`
+ * e deduplica por `erp_id` (insert batch ON CONFLICT DO NOTHING). Restart-safe
+ * por construção; forward-only (só olha ~1 dia pra trás).
+ *
+ * Dedup é a fonte de verdade da idempotência — sem estado in-memory entre polls.
+ */
+export async function pollCheckins(
+  opts: PollCheckinsOptions = {},
+): Promise<{ fetched: number; new_: number }> {
+  const env = getEnv();
+  const now = (opts.now ?? (() => new Date()))();
+  const since = computeSince(now, env.ERP_CHECKINS_LOOKBACK_HOURS);
+
+  const rows = await fetchErpCheckinsSince(since);
+
+  const toInsert: NewErpCheckin[] = [];
+  let skippedNullClient = 0;
   for (const row of rows) {
-    const erpId = String(row.id);
-    const occurredAt = new Date(row.occurred_at);
-
-    const existing = await erpRepo.findCheckinByErpId(erpId);
-    if (!existing) {
-      try {
-        await erpRepo.upsertCheckin({
-          erp_id: erpId,
-          erp_client_id: String(row.client_id),
-          event_type: row.event_type,
-          occurred_at: occurredAt,
-          metadata: row.metadata ? safeJsonParse(row.metadata) : {},
-        });
-        new_ += 1;
-      } catch (err) {
-        upsertFailures += 1;
-        logger.warn(
-          { err, erp_id: erpId, occurred_at: occurredAt.toISOString() },
-          "checkin upsert failed — cursor não avança, próxima rodada tenta de novo",
-        );
-        // CRITICAL: NÃO avança cursor pra esse row. Próximo poll re-fetcha.
-        continue;
-      }
+    // Defensivo: erp_client_id é NOT NULL no cache; um row sem cliente derrubaria
+    // o INSERT batch inteiro (atômico). A query já filtra `cliente IS NOT NULL`,
+    // mas guardamos aqui também. (checkin=1 sempre tem cliente em operação normal.)
+    if (row.client_id === null || row.client_id === undefined) {
+      skippedNullClient += 1;
+      continue;
     }
-
-    // Cursor avança SE: (a) row já existia (skipped — protege contra re-fetch
-    // eterno) OR (b) upsert teve sucesso.
-    if (!cursor || occurredAt > cursor) cursor = occurredAt;
+    toInsert.push({
+      erp_id: String(row.id),
+      erp_client_id: String(row.client_id),
+      event_type: row.event_type,
+      occurred_at: new Date(row.occurred_at),
+      metadata: row.metadata ? safeJsonParse(row.metadata) : {},
+    });
   }
 
-  if (upsertFailures > 0) {
+  let new_ = 0;
+  try {
+    new_ = await erpRepo.insertCheckinsIgnore(toInsert);
+  } catch (err) {
+    // Batch é atômico — se 1 row viola constraint, nada entra nesta rodada.
+    // Próximo poll re-escaneia a mesma janela e re-tenta (sem perda permanente).
     logger.warn(
-      { upsert_failures: upsertFailures, fetched: rows.length },
-      "poll completed with errors",
+      { err, fetched: rows.length, to_insert: toInsert.length },
+      "checkins insert batch failed — próxima rodada re-tenta (janela ainda cobre)",
     );
-  } else {
-    logger.info({ fetched: rows.length, new_ }, "checkins poll complete");
+    return { fetched: rows.length, new_: 0 };
   }
+
+  if (skippedNullClient > 0) {
+    logger.warn(
+      { skipped_null_client: skippedNullClient, fetched: rows.length },
+      "checkins poll: rows sem cliente puladas",
+    );
+  }
+  logger.info({ fetched: rows.length, new_, since: since.toISOString() }, "checkins poll complete");
   return { fetched: rows.length, new_ };
 }
 
@@ -98,9 +84,4 @@ function safeJsonParse(s: string): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-/** Reset interno só para testes — usar em beforeEach. */
-export function _resetCursor(): void {
-  cursor = null;
 }

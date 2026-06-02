@@ -41,12 +41,20 @@ const envSchema = z
     // ajustar com base em volume real (horários de pico podem precisar
     // janela menor pra reduzir ambiguidade).
     MATCH_WINDOW_SECONDS: z.coerce.number().int().positive().default(300),
-    // I1 (review 2026-05-13): lookback inicial pro cursor de checkins quando
-    // cache local está vazio (greenfield deploy). Default 24h captura o dia
-    // de operação típico sem inundar com histórico antigo. Aumentar se ERP
-    // tem checkins mais antigos que valem ingerir; diminuir se ERP tem muito
-    // ruído antigo.
-    ERP_CHECKINS_INITIAL_LOOKBACK_HOURS: z.coerce.number().int().positive().default(24),
+    // Onda 9-C: offset do timezone em que o ERP grava DATETIMEs (agendas.data é
+    // wall-clock BRT). O edge roda em UTC; sem isso o mysql2 leria '20:30' como
+    // 20:30Z (3h errado) e a janela do match-temporal nunca casaria com
+    // detected_at (UTC do RealUTC da câmera). Brasil sem DST desde 2019 → offset
+    // fixo é seguro. Formato mysql2: "±HH:MM".
+    ERP_TZ_OFFSET: z
+      .string()
+      .regex(/^[+-]\d{2}:\d{2}$/, "ERP_TZ_OFFSET must look like -03:00")
+      .default("-03:00"),
+    // Onda 9-C: tamanho da janela deslizante do pollCheckins. Cada poll re-escaneia
+    // `data >= now − N horas` (sem cursor monotônico — `agendas.data` não é
+    // monotônico com o instante do check-in). 24h cobre um dia de operação +
+    // gaps de restart; dedup por erp_id evita re-inserção.
+    ERP_CHECKINS_LOOKBACK_HOURS: z.coerce.number().int().positive().default(24),
     // Onda 9-B: prefixo HTTPS público das fotos do ERP. O seeder concatena
     // com `usuarios.imagem` (ex: "avatar_1966.jpg?p8yr") pra montar a URL
     // absoluta antes de fetch. Path confirmado via /api/v2/agendas/getUnidade
