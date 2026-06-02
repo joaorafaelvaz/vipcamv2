@@ -1,6 +1,7 @@
 import { and, asc, between, desc, eq, isNull } from "drizzle-orm";
 import { getDb } from "../db.js";
 import { type Detection, type NewDetection, detections } from "../schema/detections.js";
+import { persons } from "../schema/persons.js";
 
 export const detectionsRepo = {
   /**
@@ -56,6 +57,9 @@ export const detectionsRepo = {
       id: string;
       detected_at: Date;
       person_id: string | null;
+      // Onda 9-D: person_type via LEFT JOIN persons — NULL quando person_id NULL.
+      // Usado pelo orchestrator p/ classificar candidatos (anonymous/employee/client).
+      person_type: "client" | "employee" | "anonymous" | null;
       session_id: string | null;
       snapshot_path: string | null;
     }>
@@ -65,10 +69,12 @@ export const detectionsRepo = {
         id: detections.id,
         detected_at: detections.detected_at,
         person_id: detections.person_id,
+        person_type: persons.person_type,
         session_id: detections.session_id,
         snapshot_path: detections.snapshot_path,
       })
       .from(detections)
+      .leftJoin(persons, eq(detections.person_id, persons.id))
       .where(between(detections.detected_at, start, end))
       .orderBy(asc(detections.detected_at));
   },
