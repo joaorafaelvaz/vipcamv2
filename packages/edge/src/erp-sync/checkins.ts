@@ -6,6 +6,11 @@ import { erpRepo } from "../persistence/repositories/index.js";
 import { erpCheckins } from "../persistence/schema/erp-cache.js";
 import { fetchErpCheckinsSince } from "./queries.js";
 
+/** Início da janela deslizante: now − lookbackHours. Pura (Onda 9-C). */
+export function computeSince(now: Date, lookbackHours: number): Date {
+  return new Date(now.getTime() - lookbackHours * 3_600_000);
+}
+
 /**
  * Cursor in-memory: maior occurred_at já visto. Reconciliado no boot via
  * MAX(occurred_at) do cache local — sobrevive a restart do edge.

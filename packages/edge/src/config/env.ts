@@ -56,6 +56,11 @@ const envSchema = z
       .string()
       .regex(/^[+-]\d{2}:\d{2}$/, "ERP_TZ_OFFSET must look like -03:00")
       .default("-03:00"),
+    // Onda 9-C: tamanho da janela deslizante do pollCheckins. Cada poll re-escaneia
+    // `data >= now − N horas` (sem cursor monotônico — `agendas.data` não é
+    // monotônico com o instante do check-in). 24h cobre um dia de operação +
+    // gaps de restart; dedup por erp_id evita re-inserção.
+    ERP_CHECKINS_LOOKBACK_HOURS: z.coerce.number().int().positive().default(24),
     // Onda 9-B: prefixo HTTPS público das fotos do ERP. O seeder concatena
     // com `usuarios.imagem` (ex: "avatar_1966.jpg?p8yr") pra montar a URL
     // absoluta antes de fetch. Path confirmado via /api/v2/agendas/getUnidade
