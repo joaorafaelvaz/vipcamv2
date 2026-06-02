@@ -18,8 +18,9 @@ describe("env Onda 7 vars", () => {
     expect(parseEnv({ ...BASE, REID_ENABLED: "true" }).REID_ENABLED).toBe(true);
   });
 
-  test("REID_DIST_STRICT defaults to 0.35", () => {
-    expect(parseEnv(BASE).REID_DIST_STRICT).toBe(0.35);
+  // Onda 9-D: relaxado de 0.35 → 0.40 (consolidação no ingest — vide spec 9-D §4 Part A).
+  test("REID_DIST_STRICT defaults to 0.40", () => {
+    expect(parseEnv(BASE).REID_DIST_STRICT).toBe(0.4);
   });
 
   test("REID_DIST_LOOSE defaults to 0.55", () => {

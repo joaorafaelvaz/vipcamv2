@@ -68,6 +68,48 @@ describe("detectionsRepo.findInWindow", () => {
     expect(identifiedRows[0]?.session_id).toBe(sess.id);
   });
 
+  test("projeta person_type (null p/ person_id null; anonymous/employee conforme person)", async () => {
+    // personId (beforeEach) é anonymous (default do schema). Cria um employee inline.
+    const emp = await personsRepo.create({ display_name: "Func", person_type: "employee" });
+    try {
+      await detectionsRepo.create({
+        camera_id: cameraId,
+        person_id: null,
+        session_id: null,
+        face_attrs: {},
+        detected_at: new Date("2026-05-26T14:00:00Z"),
+        raw_event: {},
+      });
+      await detectionsRepo.create({
+        camera_id: cameraId,
+        person_id: personId, // anonymous
+        session_id: null,
+        face_attrs: {},
+        detected_at: new Date("2026-05-26T14:01:00Z"),
+        raw_event: {},
+      });
+      await detectionsRepo.create({
+        camera_id: cameraId,
+        person_id: emp.id, // employee
+        session_id: null,
+        face_attrs: {},
+        detected_at: new Date("2026-05-26T14:02:00Z"),
+        raw_event: {},
+      });
+
+      const rows = await detectionsRepo.findInWindow(
+        new Date("2026-05-26T13:55:00Z"),
+        new Date("2026-05-26T14:05:00Z"),
+      );
+      expect(rows.find((r) => r.person_id === null)?.person_type).toBeNull();
+      expect(rows.find((r) => r.person_id === personId)?.person_type).toBe("anonymous");
+      expect(rows.find((r) => r.person_id === emp.id)?.person_type).toBe("employee");
+    } finally {
+      await getDb().execute(sql`DELETE FROM detections WHERE person_id = ${emp.id}`);
+      await getDb().execute(sql`DELETE FROM persons WHERE id = ${emp.id}`);
+    }
+  });
+
   test("fora da janela não retorna", async () => {
     await detectionsRepo.create({
       camera_id: cameraId,

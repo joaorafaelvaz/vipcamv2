@@ -19,8 +19,8 @@ afterAll(async () => {
   await closeDb();
 });
 
-describe("processCheckin (match temporal)", () => {
-  test("auto_match: 1 detection anônima na janela → vinculação a Person/erp_client", async () => {
+describe("processCheckin (match temporal — Onda 9-D)", () => {
+  test("auto-match: 1 detection NULL na janela → vincula à Person/erp_client", async () => {
     const cam = await camerasRepo.create({ name: "c", ip_address: "10.0.0.1" });
     await erpRepo.upsertClient({ erp_id: "cli-1", name: "Cliente Teste", is_active: true });
 
@@ -38,7 +38,6 @@ describe("processCheckin (match temporal)", () => {
       face_attrs: {},
     });
 
-    // Checkin 30s depois da detection — dentro da janela ±5min default
     const checkin = await erpRepo.upsertCheckin({
       erp_id: "chk-1",
       erp_client_id: "cli-1",
@@ -48,27 +47,23 @@ describe("processCheckin (match temporal)", () => {
 
     await processCheckin(checkin);
 
-    // Detection foi vinculada à Person criada pra cli-1
     const updatedDet = await detectionsRepo.findById(det.id);
-    expect(updatedDet?.person_id).toBeDefined();
     expect(updatedDet?.person_id).not.toBeNull();
 
     const person = await personsRepo.findByErpClientId("cli-1");
     expect(person?.display_name).toBe("Cliente Teste");
     expect(person?.id).toBe(updatedDet?.person_id ?? "");
 
-    // Match attempt registrado como auto_matched
     const attempts = await matchAttemptsRepo.findByCheckin("chk-1");
     expect(attempts).toHaveLength(1);
     expect(attempts[0]?.decision).toBe("auto_matched");
     expect(attempts[0]?.detection_id).toBe(det.id);
   });
 
-  test("ambiguous: 2 detections anônimas na janela → match_attempt sem vincular", async () => {
+  test("ambiguous: 2 detections NULL na janela → 1 attempt agregado, sem vincular", async () => {
     const cam = await camerasRepo.create({ name: "c2", ip_address: "10.0.0.2" });
     await erpRepo.upsertClient({ erp_id: "cli-2", name: "Cliente B", is_active: true });
 
-    // 2 detections anônimas dentro da janela (≠ track_ids = pessoas distintas)
     const baseTime = new Date("2026-05-01T15:00:00Z");
     for (const trackId of ["t-A", "t-B"]) {
       const sess = await sessionsRepo.create({
@@ -96,19 +91,14 @@ describe("processCheckin (match temporal)", () => {
 
     await processCheckin(checkin);
 
-    // Match attempt = ambiguous, nenhuma detection foi vinculada
     const attempts = await matchAttemptsRepo.findByCheckin("chk-2");
     expect(attempts).toHaveLength(1);
     expect(attempts[0]?.decision).toBe("ambiguous");
     expect(attempts[0]?.detection_id).toBeNull();
-    expect(attempts[0]?.notes).toContain("2 candidates");
-
-    // Person para cli-2 NÃO foi criada (não houve match)
-    const person = await personsRepo.findByErpClientId("cli-2");
-    expect(person).toBeNull();
+    expect(attempts[0]?.notes).toContain("null candidates");
   });
 
-  test("rejected: 0 detections na janela → match_attempt com decision=rejected", async () => {
+  test("rejected: 0 detections na janela → nenhum match_attempt criado", async () => {
     await erpRepo.upsertClient({ erp_id: "cli-3", name: "Cliente C", is_active: true });
     const checkin = await erpRepo.upsertCheckin({
       erp_id: "chk-3",
@@ -120,22 +110,29 @@ describe("processCheckin (match temporal)", () => {
     await processCheckin(checkin);
 
     const attempts = await matchAttemptsRepo.findByCheckin("chk-3");
-    expect(attempts[0]?.decision).toBe("rejected");
+    expect(attempts).toHaveLength(0);
   });
 
   test("idempotência: re-process não cria match_attempt duplicado", async () => {
+    const cam = await camerasRepo.create({ name: "c4", ip_address: "10.0.0.4" });
     await erpRepo.upsertClient({ erp_id: "cli-4", name: "C", is_active: true });
+    await detectionsRepo.create({
+      camera_id: cam.id,
+      session_id: null,
+      detected_at: new Date("2026-05-01T16:00:30Z"),
+      raw_event: {},
+      face_attrs: {},
+    });
     const checkin = await erpRepo.upsertCheckin({
       erp_id: "chk-4",
       erp_client_id: "cli-4",
       event_type: "x",
-      occurred_at: new Date(),
+      occurred_at: new Date("2026-05-01T16:00:00Z"),
     });
-    await processCheckin(checkin);
+    await processCheckin(checkin); // 1 NULL → auto_matched (1 attempt)
 
-    // 2nd run — checkin já tem processed_at, deve ser no-op
     const updated = await erpRepo.findCheckinByErpId("chk-4");
-    if (updated) await processCheckin(updated);
+    if (updated) await processCheckin(updated); // processed_at setado → no-op
 
     const attempts = await matchAttemptsRepo.findByCheckin("chk-4");
     expect(attempts).toHaveLength(1);

@@ -71,8 +71,18 @@ const envSchema = z
       .transform((v) => v === "true"),
     REID_BASE_URL: z.string().url().default("http://127.0.0.1:5005"),
     // Thresholds via ENV pra calibração empírica sem rebuild — ver spec §4.3.
-    REID_DIST_STRICT: z.coerce.number().min(0).max(2).default(0.35),
+    // Onda 9-D: strict relaxado 0.35 → 0.40 (consolidar identidades no ingest —
+    // mais matches de visitantes recorrentes → menos anônimos fragmentados →
+    // menos ruído no /matches ao longo do tempo). Refine exige strict<loose.
+    REID_DIST_STRICT: z.coerce.number().min(0).max(2).default(0.4),
     REID_DIST_LOOSE: z.coerce.number().min(0).max(2).default(0.55),
+    // Onda 9-D: heurística "staff-like" pro match-temporal. Um anônimo presente
+    // em ≥ STAFF_MIN_ACTIVE_HOURS slots de hora distintos nos últimos
+    // STAFF_LOOKBACK_DAYS dias é tratado como staff/onipresente e EXCLUÍDO do
+    // conjunto de candidatos do checkin (não é quem deu checkin). Thresholds
+    // validados empiricamente (plano 9-D Task 4); ajustar por env se preciso.
+    STAFF_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
+    STAFF_MIN_ACTIVE_HOURS: z.coerce.number().int().positive().default(20),
     SNAPSHOTS_DIR: z.string().min(1).default("/var/lib/vipcam/snapshots"),
     // Onda 7: dimensões do frame que vem do snapshot.cgi. Necessário pra
     // denormalizar event.bbox (que é 0..1) pra pixels inteiros antes do
