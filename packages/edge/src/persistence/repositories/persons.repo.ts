@@ -1,6 +1,7 @@
 import type { PaginatedResponse, PersonDetail, PersonSummary } from "@vipcam/shared";
 import { and, eq, ilike, or, sql } from "drizzle-orm";
 import { getDb } from "../db.js";
+import { detections } from "../schema/detections.js";
 import { erpClients } from "../schema/erp-cache.js";
 import { type NewPerson, type Person, persons } from "../schema/persons.js";
 import { sessions } from "../schema/sessions.js";
@@ -54,6 +55,29 @@ export const personsRepo = {
         updated_at: sql`now()`,
       })
       .where(eq(persons.id, id));
+  },
+
+  /**
+   * Onda 9-D — heurística "staff-like / onipresente": person com detecções em
+   * >= minHours slots de hora distintos (date_trunc('hour')) nos últimos
+   * lookbackDays dias. Proxy de "presente o dia todo, todo dia" (≠ cliente que
+   * vem ~1h). Quem é staff-like é EXCLUÍDO do conjunto de candidatos do checkin
+   * no match-temporal (não é quem deu checkin). Query indexada por
+   * detections_person_idx + detected_idx.
+   */
+  async isStaffLike(personId: string, lookbackDays: number, minHours: number): Promise<boolean> {
+    const [row] = await getDb()
+      .select({
+        activeHours: sql<number>`count(distinct date_trunc('hour', ${detections.detected_at}))::int`,
+      })
+      .from(detections)
+      .where(
+        and(
+          eq(detections.person_id, personId),
+          sql`${detections.detected_at} >= now() - make_interval(days => ${lookbackDays})`,
+        ),
+      );
+    return (row?.activeHours ?? 0) >= minHours;
   },
 
   /**
