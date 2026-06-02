@@ -102,6 +102,23 @@ export const erpRepo = {
     return c;
   },
 
+  /**
+   * Insert batch idempotente: pula erp_ids já existentes (ON CONFLICT DO NOTHING).
+   * Retorna o nº de linhas REALMENTE inseridas (conflitos não voltam no returning).
+   * Usado pelo pollCheckins (Onda 9-C) que re-escaneia a janela deslizante a cada
+   * 30s — dedup barato em 1 round-trip, sem clobber de metadata/processed_at das
+   * já cacheadas (diferente de upsertCheckin, que faz DO UPDATE).
+   */
+  async insertCheckinsIgnore(rows: NewErpCheckin[]): Promise<number> {
+    if (rows.length === 0) return 0;
+    const inserted = await getDb()
+      .insert(erpCheckins)
+      .values(rows)
+      .onConflictDoNothing({ target: erpCheckins.erp_id })
+      .returning({ erp_id: erpCheckins.erp_id });
+    return inserted.length;
+  },
+
   async findCheckinByErpId(erpId: string): Promise<ErpCheckin | null> {
     const rows = await getDb()
       .select()
