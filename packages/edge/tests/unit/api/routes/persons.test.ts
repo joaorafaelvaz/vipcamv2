@@ -38,6 +38,11 @@ function defaultDeps(overrides: Partial<PersonsDeps> = {}): PersonsDeps {
         avg_visit_duration_min: 15,
       }) as PersonDetail,
     listSessions: async () => [],
+    // Onda 10 — stubs neutros (rotas identify testadas em persons-identify.test.ts)
+    listIdentifyQueue: async () => [],
+    findPersonType: async () => null,
+    mergeIntoEmployee: async () => undefined,
+    dismissIdentify: async () => undefined,
     ...overrides,
   };
 }
