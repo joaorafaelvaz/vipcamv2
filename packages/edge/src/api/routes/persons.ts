@@ -75,7 +75,10 @@ export function createPersonsRoutes(deps: PersonsDeps): Hono {
       return c.json({ error: "invalid_query", issues: parsed.error.issues }, 400);
     }
     const params: Parameters<PersonsDeps["list"]>[0] = {
-      limit: clamp(parsed.data.limit, 1, 200),
+      // Onda 10 fix: 200→500. Produção tem ~371 funcionários e o dialog
+      // "É funcionário…" precisa da lista completa (truncar deixava ~171
+      // funcionários inacháveis). Payload de 500 PersonSummary é pequeno.
+      limit: clamp(parsed.data.limit, 1, 500),
       offset: parsed.data.offset,
     };
     if (parsed.data.type !== undefined) params.type = parsed.data.type;

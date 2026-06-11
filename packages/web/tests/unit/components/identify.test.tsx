@@ -58,8 +58,12 @@ mock.module("../../../src/lib/api-client", () => ({
   apiFetch: async () => ({}),
   ApiError: class extends Error {},
 }));
+const usePeopleCalls: Array<Record<string, unknown>> = [];
 mock.module("../../../src/lib/queries/persons", () => ({
-  usePeople: () => ({ data: { items: employees, total: 2 }, isLoading: false }),
+  usePeople: (params: Record<string, unknown>) => {
+    usePeopleCalls.push(params);
+    return { data: { items: employees, total: 2 }, isLoading: false };
+  },
 }));
 mock.module("../../../src/lib/queries/identify", () => ({
   useIdentifyQueue: () => ({ data: queueData, isLoading: false }),
@@ -85,6 +89,7 @@ beforeEach(() => {
   queueData = queueItems;
   identifyCalls.length = 0;
   dismissCalls.length = 0;
+  usePeopleCalls.length = 0;
 });
 
 describe("<IdentifyEmployeeDialog>", () => {
@@ -109,6 +114,13 @@ describe("<IdentifyEmployeeDialog>", () => {
     });
     expect(screen.queryByText("Carlos Barbeiro")).toBeNull();
     expect(screen.getByText("Diego Caixa")).toBeTruthy();
+
+    // Onda 10 fix: produção tem ~371 funcionários — o componente DEVE pedir
+    // limit 500 (lista completa) e repassar o filtro como search server-side
+    // (ilike no display_name; acha qualquer funcionário mesmo acima do cap).
+    const last = usePeopleCalls[usePeopleCalls.length - 1];
+    expect(last?.limit).toBe(500);
+    expect(last?.search).toBe("diego");
   });
 
   test("selecionar funcionário + Confirmar → mutate(anonId, employeePersonId)", async () => {

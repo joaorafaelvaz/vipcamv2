@@ -84,7 +84,10 @@ describe("GET /api/persons", () => {
     expect(res.status).toBe(400);
   });
 
-  test("clampa limit em [1, 200]", async () => {
+  // Onda 10 fix: cap 200→500 — produção tem ~371 funcionários; o dialog
+  // "É funcionário…" precisa da lista completa (antes truncava em 200 e
+  // ~171 funcionários ficavam inacháveis).
+  test("clampa limit em [1, 500]", async () => {
     let receivedParams: { limit: number; offset: number } | undefined;
     const app = mountWith(
       defaultDeps({
@@ -95,7 +98,7 @@ describe("GET /api/persons", () => {
       }),
     );
     await app.request("/api/persons?limit=999");
-    expect(receivedParams?.limit).toBe(200);
+    expect(receivedParams?.limit).toBe(500);
     await app.request("/api/persons?limit=0");
     expect(receivedParams?.limit).toBe(1);
   });

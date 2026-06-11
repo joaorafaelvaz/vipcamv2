@@ -31,9 +31,18 @@ export function IdentifyEmployeeDialog({
   const [open, setOpen] = useState(defaultOpen);
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const { data, isLoading } = usePeople({ type: "employee", limit: 200 });
+  // Onda 10 fix: produção tem ~371 funcionários — limit 500 (API cap) traz
+  // todos, e o filtro também vai como `search` server-side (ilike em
+  // display_name): mesmo se um dia passar de 500, digitar acha qualquer um.
+  const { data, isLoading } = usePeople({
+    type: "employee",
+    limit: 500,
+    ...(filter ? { search: filter } : {}),
+  });
   const identify = useIdentifyAsEmployee();
 
+  // Filtro local em cima do resultado (refina enquanto o refetch do search
+  // server-side chega — usePeople usa keepPreviousData).
   const employees = (data?.items ?? []).filter((e) =>
     filter ? (e.display_name ?? "").toLowerCase().includes(filter.toLowerCase()) : true,
   );
