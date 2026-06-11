@@ -1,5 +1,5 @@
 import type { PaginatedResponse, PersonDetail, PersonSummary } from "@vipcam/shared";
-import { and, eq, ilike, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { getDb } from "../db.js";
 import { detections } from "../schema/detections.js";
 import { erpClients } from "../schema/erp-cache.js";
@@ -78,6 +78,75 @@ export const personsRepo = {
         ),
       );
     return (row?.activeHours ?? 0) >= minHours;
+  },
+
+  /**
+   * Onda 10 — fila de curadoria "identificar funcionário": anônimos com ≥1
+   * detecção, não-dispensados, ordenados por nº de detecções desc (mais visto
+   * = mais provável staff). 2 queries (agregado + snapshots) + agrupamento em
+   * memória — pattern Onda 4 D1.
+   */
+  async listIdentifyQueue(limit: number): Promise<
+    Array<{
+      person_id: string;
+      detection_count: number;
+      last_seen_at: Date | null;
+      snapshots: string[];
+    }>
+  > {
+    const rows = await getDb()
+      .select({
+        person_id: persons.id,
+        detection_count: sql<number>`count(${detections.id})::int`,
+        last_seen_at: persons.last_seen_at,
+      })
+      .from(persons)
+      .innerJoin(detections, eq(detections.person_id, persons.id))
+      .where(
+        and(
+          eq(persons.person_type, "anonymous"),
+          sql`(${persons.metadata}->>'identify_dismissed') IS DISTINCT FROM 'true'`,
+        ),
+      )
+      .groupBy(persons.id)
+      .orderBy(sql`count(${detections.id}) DESC`)
+      .limit(limit);
+
+    if (rows.length === 0) return [];
+    const ids = rows.map((r) => r.person_id);
+    const snaps = await getDb()
+      .select({
+        person_id: detections.person_id,
+        snapshot_path: detections.snapshot_path,
+      })
+      .from(detections)
+      .where(and(inArray(detections.person_id, ids), isNotNull(detections.snapshot_path)))
+      .orderBy(desc(detections.detected_at));
+
+    const byPerson = new Map<string, string[]>();
+    for (const s of snaps) {
+      if (!s.person_id || !s.snapshot_path) continue;
+      const arr = byPerson.get(s.person_id) ?? [];
+      if (arr.length < 3) {
+        arr.push(s.snapshot_path);
+        byPerson.set(s.person_id, arr);
+      }
+    }
+    return rows.map((r) => ({ ...r, snapshots: byPerson.get(r.person_id) ?? [] }));
+  },
+
+  /**
+   * Onda 10 — marca anônimo como dispensado da fila (ex.: cliente frequente).
+   * `||` jsonb: atômico, preserva chaves existentes (sem read-modify-write race).
+   */
+  async dismissIdentify(id: string): Promise<void> {
+    await getDb()
+      .update(persons)
+      .set({
+        metadata: sql`${persons.metadata} || '{"identify_dismissed":true}'::jsonb`,
+        updated_at: sql`now()`,
+      })
+      .where(eq(persons.id, id));
   },
 
   /**

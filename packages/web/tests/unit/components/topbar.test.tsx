@@ -33,6 +33,8 @@ describe("Topbar", () => {
     render(wrap(<Topbar />));
     expect(screen.getByText("Live")).toBeTruthy();
     expect(screen.getByText("Pessoas")).toBeTruthy();
+    // Onda 10 — tab da fila de curadoria
+    expect(screen.getByText("Identificar")).toBeTruthy();
     expect(screen.getByText("Matches")).toBeTruthy();
     const badge = await screen.findByText("3");
     expect(badge).toBeTruthy();

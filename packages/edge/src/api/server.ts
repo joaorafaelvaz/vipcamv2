@@ -220,6 +220,11 @@ export function createServer() {
       list: (params) => personsRepo.listWithFilters(params),
       getById: (id) => personsRepo.findByIdWithStats(id),
       listSessions: (id, limit) => sessionsRepo.listByPerson(id, limit),
+      // Onda 10 — curadoria "identificar funcionário"
+      listIdentifyQueue: (limit) => personsRepo.listIdentifyQueue(limit),
+      findPersonType: async (id) => (await personsRepo.findById(id))?.person_type ?? null,
+      mergeIntoEmployee: (anonId, empId) => personsRepo.mergeInto(anonId, empId, "user"),
+      dismissIdentify: (id) => personsRepo.dismissIdentify(id),
     }),
   );
 
