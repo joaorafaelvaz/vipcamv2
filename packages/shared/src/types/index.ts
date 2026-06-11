@@ -37,6 +37,16 @@ export interface PersonDetail extends PersonSummary {
   avg_visit_duration_min: number | null;
 }
 
+/** Onda 10 — item da fila de curadoria "identificar funcionário".
+ * Anônimo frequente + amostras de fotos pra o operador reconhecer. */
+export interface IdentifyQueueItem {
+  person_id: UUID;
+  detection_count: number;
+  last_seen_at: ISO8601 | null;
+  /** Até 3 snapshot_paths recentes (relativos — web resolve via snapshotUrl). */
+  snapshots: string[];
+}
+
 export interface DetectionThumbnail {
   id: UUID;
   detected_at: ISO8601;
