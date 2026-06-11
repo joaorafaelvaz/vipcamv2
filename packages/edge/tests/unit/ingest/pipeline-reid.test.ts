@@ -35,7 +35,7 @@ const installMocks = () => {
         createdPerson = p;
         return { id: "p-new", ...p };
       },
-      incrementVisitCount: async () => undefined,
+      recordSighting: async () => undefined,
     },
   }));
   mock.module("../../../src/persistence/repositories/face-records.repo.js", () => ({

@@ -83,6 +83,10 @@ const envSchema = z
     // validados empiricamente (plano 9-D Task 4); ajustar por env se preciso.
     STAFF_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
     STAFF_MIN_ACTIVE_HOURS: z.coerce.number().int().positive().default(20),
+    // Onda 11: dedup de visitas — um avistamento só vira visita NOVA se o gap
+    // desde persons.last_seen_at exceder N horas. Sem isso, cada detecção
+    // matched_strict incrementava total_visits (mesma pessoa 5× numa hora = +5).
+    VISIT_GAP_HOURS: z.coerce.number().int().positive().default(12),
     SNAPSHOTS_DIR: z.string().min(1).default("/var/lib/vipcam/snapshots"),
     // Onda 7: dimensões do frame que vem do snapshot.cgi. Necessário pra
     // denormalizar event.bbox (que é 0..1) pra pixels inteiros antes do

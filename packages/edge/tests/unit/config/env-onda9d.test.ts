@@ -22,4 +22,9 @@ describe("Onda 9-D env defaults (staff-like heuristic)", () => {
     const e = parseEnv(BASE);
     expect(e.REID_DIST_STRICT).toBeLessThan(e.REID_DIST_LOOSE);
   });
+
+  test("VISIT_GAP_HOURS default 12 + override (Onda 11)", () => {
+    expect(parseEnv(BASE).VISIT_GAP_HOURS).toBe(12);
+    expect(parseEnv({ ...BASE, VISIT_GAP_HOURS: "14" }).VISIT_GAP_HOURS).toBe(14);
+  });
 });

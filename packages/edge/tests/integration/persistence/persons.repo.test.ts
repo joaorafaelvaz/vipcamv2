@@ -88,7 +88,7 @@ describe("personsRepo", () => {
         person_type: "client",
         display_name: "Recente",
       });
-      await personsRepo.incrementVisitCount(recent.id, new Date());
+      await personsRepo.recordSighting(recent.id, new Date(), 12);
 
       const result = await personsRepo.listWithFilters({ limit: 10, offset: 0 });
       expect(result.items[0]?.display_name).toBe("Recente");
