@@ -113,7 +113,7 @@ export async function processEvent(
 
     // Decide person_id final + side-effects de person:
     // - new_person: cria anonymous, usa o id retornado.
-    // - matched_strict: incrementa visit_count.
+    // - matched_strict: registra avistamento (visita nova só se gap > VISIT_GAP_HOURS — Onda 11).
     // - inherited_session / borderline / disabled / unavailable: nada a fazer.
     let personId: string | null = reidOut?.personId ?? null;
     if (reidOut?.status === "new_person") {
@@ -124,7 +124,7 @@ export async function processEvent(
       });
       personId = created.id;
     } else if (reidOut?.status === "matched_strict" && personId) {
-      await personsRepo.incrementVisitCount(personId, detectedAt);
+      await personsRepo.recordSighting(personId, detectedAt, getEnv().VISIT_GAP_HOURS);
     }
 
     // face_attrs guarda atributos PARSED (age, gender, emotion, etc.) +

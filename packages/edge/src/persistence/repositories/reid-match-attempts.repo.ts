@@ -1,5 +1,6 @@
 import type { ReidMatchPendingEnriched, ReidResolveDecision } from "@vipcam/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
+import { getEnv } from "../../config/env.js";
 import { getDb } from "../db.js";
 import { detections } from "../schema/detections.js";
 import { faceRecords } from "../schema/face-records.js";
@@ -107,7 +108,12 @@ export const reidMatchAttemptsRepo = {
           UPDATE detections SET person_id = ${att.candidate_person_id}
           WHERE id = ${att.detection_id}
         `);
-        await personsRepo.incrementVisitCount(att.candidate_person_id, att.det_detected_at);
+        // Onda 11: visita nova só se gap > VISIT_GAP_HOURS (dedup de avistamentos).
+        await personsRepo.recordSighting(
+          att.candidate_person_id,
+          att.det_detected_at,
+          getEnv().VISIT_GAP_HOURS,
+        );
       }
     } else {
       const newPerson = await personsRepo.create({
