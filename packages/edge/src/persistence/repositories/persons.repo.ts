@@ -46,12 +46,21 @@ export const personsRepo = {
     return p ?? null;
   },
 
-  async incrementVisitCount(id: string, lastSeenAt: Date): Promise<void> {
+  /**
+   * Onda 11 — registra um avistamento da pessoa. Só conta VISITA NOVA se o
+   * gap desde last_seen_at exceder gapHours (dedup: mesma pessoa detectada
+   * várias vezes no mesmo período = 1 visita). UPDATE único atômico:
+   * - CASE: gap > gapHours → +1; senão (inclusive out-of-order, gap negativo) +0.
+   * - GREATEST: last_seen_at nunca regride com evento fora de ordem.
+   * Substitui incrementVisitCount (que incrementava a cada detecção strict).
+   */
+  async recordSighting(id: string, detectedAt: Date, gapHours: number): Promise<void> {
+    const at = detectedAt.toISOString();
     await getDb()
       .update(persons)
       .set({
-        last_seen_at: lastSeenAt,
-        total_visits: sql`${persons.total_visits} + 1`,
+        total_visits: sql`${persons.total_visits} + CASE WHEN ${at}::timestamptz - ${persons.last_seen_at} > make_interval(hours => ${gapHours}) THEN 1 ELSE 0 END`,
+        last_seen_at: sql`GREATEST(${persons.last_seen_at}, ${at}::timestamptz)`,
         updated_at: sql`now()`,
       })
       .where(eq(persons.id, id));
