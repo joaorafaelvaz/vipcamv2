@@ -40,10 +40,7 @@ export function IdentifyEmployeeDialog({
 
   function confirm() {
     if (!selected) return;
-    identify.mutate(
-      { anonId, employeePersonId: selected },
-      { onSuccess: () => setOpen(false) },
-    );
+    identify.mutate({ anonId, employeePersonId: selected }, { onSuccess: () => setOpen(false) });
   }
 
   return (

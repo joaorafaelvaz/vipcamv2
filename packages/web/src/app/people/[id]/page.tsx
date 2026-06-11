@@ -1,5 +1,6 @@
 "use client";
 
+import { IdentifyEmployeeDialog } from "@/components/identify-employee-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -58,6 +59,11 @@ export default function PersonProfilePage({ params }: { params: { id: string } }
               </Badge>
             )}
           </div>
+          {person.person_type === "anonymous" && (
+            <div className="mt-3">
+              <IdentifyEmployeeDialog anonId={person.id} />
+            </div>
+          )}
         </div>
       </div>
 
